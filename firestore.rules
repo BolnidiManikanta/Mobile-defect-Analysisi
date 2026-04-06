@@ -1,0 +1,62 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function IsAuth() { return request.auth != null; }
+    function IsOwner(userId) { return IsAuth() && request.auth.uid == userId; }
+    function IsAdmin() { return IsAuth() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'; }
+    function IsVendor() { return IsAuth() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'vendor'; }
+
+    // Users
+    match /users/{userId} {
+      allow read: if IsAuth();
+      allow write: if IsOwner(userId) || IsAdmin();
+    }
+
+    // Scans
+    match /scans/{scanId} {
+      allow read: if IsAuth() && (IsOwner(resource.data.uid) || IsAdmin());
+      allow create: if IsAuth() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if IsAdmin();
+    }
+
+    // Vendors
+    match /vendors/{vendorId} {
+      allow read: if true;
+      allow write: if IsOwner(vendorId) || IsAdmin();
+    }
+
+    // Bookings
+    match /bookings/{bookingId} {
+      allow read: if IsAuth() && (IsOwner(resource.data.uid) || resource.data.vendorId == request.auth.uid || IsAdmin());
+      allow create: if IsAuth();
+      allow update: if IsAuth() && (IsOwner(resource.data.uid) || resource.data.vendorId == request.auth.uid || IsAdmin());
+    }
+
+    // Devices (Pricing)
+    match /devices/{deviceId} {
+      allow read: if true;
+      allow write: if IsAdmin();
+    }
+
+    // Chats
+    match /chats/{bookingId} {
+      allow read, write: if IsAuth() && (
+        get(/databases/$(database)/documents/bookings/$(bookingId)).data.uid == request.auth.uid ||
+        get(/databases/$(database)/documents/bookings/$(bookingId)).data.vendorId == request.auth.uid ||
+        IsAdmin()
+      );
+    }
+
+    // Notifications
+    match /users/{userId}/notifications/{notifId} {
+      allow read, write: if IsOwner(userId) || IsAdmin();
+    }
+
+    // Logs
+    match /logs/{logId} {
+      allow create: if IsAuth();
+      allow read: if IsAdmin();
+    }
+  }
+}

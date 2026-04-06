@@ -1,0 +1,18 @@
+{
+  "name": "smartsep-ai",
+  "version": "3.0.0",
+  "description": "SmartSep AI — Mobile Damage Intelligence Platform",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "firebase": "^10.14.1",
+    "jspdf": "^4.2.1"
+  },
+  "devDependencies": {
+    "vite": "^5.2.0"
+  }
+}
