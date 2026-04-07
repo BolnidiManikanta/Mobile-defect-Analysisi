@@ -64,7 +64,7 @@ export async function updateUserProfile(uid, data) {
 // ── Scans ───────────────────────────────────────────────────
 export async function loadUserScans(uid) {
   try {
-    const q    = query(collection(db, 'scans'), where('uid','==',uid), orderBy('createdAt','desc'), limit(100));
+    const q    = query(collection(db, 'scans'), where('uid','==',uid), orderBy('createdAt','desc'), limit(500));
     const snap = await getDocs(q);
     if (snap.empty) return [...MOCK_SCANS];
     return snap.docs.map(d => ({

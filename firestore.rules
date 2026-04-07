@@ -4,59 +4,52 @@ service cloud.firestore {
 
     function IsAuth() { return request.auth != null; }
     function IsOwner(userId) { return IsAuth() && request.auth.uid == userId; }
-    function IsAdmin() { return IsAuth() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'; }
     function IsVendor() { return IsAuth() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'vendor'; }
 
-    // Users
+    // Users - Can only read/write own profile (GDPR compliant)
     match /users/{userId} {
-      allow read: if IsAuth();
-      allow write: if IsOwner(userId) || IsAdmin();
+      allow read: if IsOwner(userId);
+      allow write: if IsOwner(userId);
     }
 
-    // Scans
+    // Scans - Only owner can read/write own scans
     match /scans/{scanId} {
-      allow read: if IsAuth() && (IsOwner(resource.data.uid) || IsAdmin());
+      allow read: if IsAuth() && resource.data.uid == request.auth.uid;
       allow create: if IsAuth() && request.resource.data.uid == request.auth.uid;
-      allow update, delete: if IsAdmin();
+      allow update, delete: if IsOwner(resource.data.uid);
     }
 
-    // Vendors
+    // Vendors - All authenticated can read, only vendor can write own profile
     match /vendors/{vendorId} {
-      allow read: if true;
-      allow write: if IsOwner(vendorId) || IsAdmin();
+      allow read: if IsAuth();
+      allow write: if IsOwner(vendorId);
     }
 
-    // Bookings
+    // Bookings - Only booking parties (user or vendor) can access
     match /bookings/{bookingId} {
-      allow read: if IsAuth() && (IsOwner(resource.data.uid) || resource.data.vendorId == request.auth.uid || IsAdmin());
-      allow create: if IsAuth();
-      allow update: if IsAuth() && (IsOwner(resource.data.uid) || resource.data.vendorId == request.auth.uid || IsAdmin());
+      allow read: if IsAuth() && (IsOwner(resource.data.uid) || resource.data.vendorId == request.auth.uid);
+      allow create: if IsAuth() && request.resource.data.uid == request.auth.uid;
+      allow update: if IsAuth() && (IsOwner(resource.data.uid) || resource.data.vendorId == request.auth.uid);
+      allow delete: if IsOwner(resource.data.uid);
     }
 
-    // Devices (Pricing)
+    // Devices (Pricing) - Public read only, no writes
     match /devices/{deviceId} {
       allow read: if true;
-      allow write: if IsAdmin();
+      allow write: if false;
     }
 
-    // Chats
+    // Chats - Only booking parties can read and write
     match /chats/{bookingId} {
       allow read, write: if IsAuth() && (
         get(/databases/$(database)/documents/bookings/$(bookingId)).data.uid == request.auth.uid ||
-        get(/databases/$(database)/documents/bookings/$(bookingId)).data.vendorId == request.auth.uid ||
-        IsAdmin()
+        get(/databases/$(database)/documents/bookings/$(bookingId)).data.vendorId == request.auth.uid
       );
     }
 
-    // Notifications
+    // Notifications - User can only read/write own notifications
     match /users/{userId}/notifications/{notifId} {
-      allow read, write: if IsOwner(userId) || IsAdmin();
-    }
-
-    // Logs
-    match /logs/{logId} {
-      allow create: if IsAuth();
-      allow read: if IsAdmin();
+      allow read, write: if IsOwner(userId);
     }
   }
 }

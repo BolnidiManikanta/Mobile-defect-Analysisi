@@ -9,8 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "firebase": "^10.14.1",
-    "jspdf": "^4.2.1"
+    "firebase": "^10.14.1"
   },
   "devDependencies": {
     "vite": "^5.2.0"

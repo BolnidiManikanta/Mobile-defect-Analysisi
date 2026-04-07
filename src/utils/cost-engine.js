@@ -131,13 +131,20 @@ export async function estimateTotalCost(brand, damages, model = '') {
     estimateCost(brand, d.type, d.severity, model)
   ));
 
-  // Multi-damage discount: 10% off for 2+ issues (labor overlap)
-  const discount = estimates.length > 1 ? 0.9 : 1.0;
+  // Multi-damage discount: 10% off per item for 2+ issues (labor overlap)
+  // Apply discount per-item, not to total
+  const discountMultiplier = estimates.length > 1 ? 0.9 : 1.0;
+  
+  const discountedEstimates = estimates.map(e => ({
+    min: Math.round(e.min * discountMultiplier),
+    max: Math.round(e.max * discountMultiplier),
+    avg: Math.round(e.avg * discountMultiplier),
+  }));
 
   return {
-    min:        Math.round(estimates.reduce((s, e) => s + e.min, 0) * discount),
-    max:        Math.round(estimates.reduce((s, e) => s + e.max, 0) * discount),
-    avg:        Math.round(estimates.reduce((s, e) => s + e.avg, 0) * discount),
+    min:        discountedEstimates.reduce((s, e) => s + e.min, 0),
+    max:        discountedEstimates.reduce((s, e) => s + e.max, 0),
+    avg:        discountedEstimates.reduce((s, e) => s + e.avg, 0),
     currency:   'INR',
     confidence: Math.min(...estimates.map(e => e.confidence)),
     breakdown:  estimates,

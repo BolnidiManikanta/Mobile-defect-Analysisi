@@ -36,6 +36,25 @@ import { renderAdmin } from './pages/admin.js';
 import { renderHelp } from './pages/help.js';
 import { renderSettings } from './pages/settings.js';
 
+// ── Permission Management ──────────────────────────────────
+async function requestNotificationPermission() {
+  if (!('Notification' in window)) return;
+  if (Notification.permission === 'granted') return;
+  if (Notification.permission !== 'denied') {
+    try {
+      const result = await Notification.requestPermission();
+      if (result === 'granted') {
+        console.log('[SmartSep] Notification permission granted');
+      }
+    } catch (e) {
+      console.warn('[SmartSep] Notification permission error:', e);
+    }
+  }
+}
+
+// Request permissions on first visit
+requestNotificationPermission();
+
 // ── App State ──────────────────────────────────────────────
 let S = {
   user:           null,
@@ -55,13 +74,15 @@ let S = {
   chatMessages:   [],
   chatUnsub:      null,
   adminData:      { users:[], vendors:[], scans:[], logs:[] },
+  detectionThreshold: 0.85,  // Live camera confidence threshold
+  liveMode:       'all',      // scan mode: all, screen, body, camera
 };
 
 // ── Secondary State ────────────────────────────────────────
 let detectSt = {
   brand: '', model: '', file: null, preview: null,
   fileBack: null, previewBack: null,
-  status: 'idle', result: null, showModal: false
+  status: 'idle', result: null, showModal: false, isAnalyzing: false // Add lock prevent concurrent analysis
 };
 let histFilter = 'all';
 let histSearch = '';
@@ -197,9 +218,15 @@ function bindDetect() {
 function handleFile(file, side) {
   if (!file) return;
   
-  // Validation: Size < 5MB, Type image/*
-  if (file.size > 5 * 1024 * 1024) return toast('Image too large (Max 5MB)', 'error');
-  if (!file.type.startsWith('image/')) return toast('Invalid file type', 'error');
+  // Validation: Size <= 5MB, Type image/*
+  const maxSizeBytes = 5 * 1024 * 1024;
+  if (file.size > maxSizeBytes) {
+    const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
+    return toast(`Image too large (${sizeMB}MB - Max 5MB)`, 'error');
+  }
+  if (!file.type.startsWith('image/')) {
+    return toast('Invalid file type. Please upload an image (JPG, PNG, WebP, etc.)', 'error');
+  }
 
   const reader = new FileReader();
   reader.onload = e => { 
@@ -207,64 +234,115 @@ function handleFile(file, side) {
     else { detectSt.fileBack = file; detectSt.previewBack = e.target.result; }
     render(); 
   };
+  reader.onerror = () => toast('Error reading file', 'error');
   reader.readAsDataURL(file);
 }
 
 async function runDetectAnalysis() {
   if (!detectSt.file && !detectSt.fileBack) return toast(t('upload_photo_msg'), 'error');
   
-  // Phase 7: Spam Protection
+  // CONCURRENT DETECTION PREVENTION: Lock if already analyzing
+  if (detectSt.isAnalyzing) {
+    return toast('Analysis already in progress. Please wait.', 'warning');
+  }
+  
+  detectSt.isAnalyzing = true;
+  
+  // Spam Protection
   if (S.user) {
     const allowed = await rateLimitCheck(S.user.uid, 'scan_complete', 5, 2 * 60 * 1000); // 5 scans per 2 mins
-    if (!allowed) return toast('Security Lock: Too many scans. Please wait 2 mins.', 'error');
+    if (!allowed) {
+      detectSt.isAnalyzing = false;
+      return toast('Security Lock: Too many scans. Please wait 2 mins.', 'error');
+    }
   }
 
   detectSt.status = 'analyzing';
   render();
 
   try {
+    // Image loader with error boundary
+    const loadImage = (src) => new Promise((resolve, reject) => {
+      try {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        // Timeout protection: image should load within 10 seconds
+        const timeout = setTimeout(() => {
+          reject(new Error('Image load timeout (>10s)'));
+        }, 10000);
+        img.onload = () => {
+          clearTimeout(timeout);
+          resolve(img);
+        };
+        img.onerror = () => {
+          clearTimeout(timeout);
+          reject(new Error('Failed to load image'));
+        };
+        img.src = src;
+      } catch (e) {
+        reject(new Error('Image initialization error: ' + e.message));
+      }
+    });
+
+    // Parallel image analysis with error boundaries
+    const analyses = [];
+    if (detectSt.preview) {
+      analyses.push(
+        loadImage(detectSt.preview)
+          .then(img => analyzeImage(img))
+          .catch(err => {
+            console.warn('[Detection] Front image analysis error:', err.message);
+            throw new Error(`Front image analysis failed: ${err.message}`);
+          })
+      );
+    }
+    if (detectSt.previewBack) {
+      analyses.push(
+        loadImage(detectSt.previewBack)
+          .then(img => analyzeImage(img))
+          .catch(err => {
+            console.warn('[Detection] Back image analysis error:', err.message);
+            throw new Error(`Back image analysis failed: ${err.message}`);
+          })
+      );
+    }
+    
+    const results = await Promise.all(analyses);
+
+    // Merge results intelligently
     let finalDamages = [];
     let combinedInference = 0;
-    let confidenceSum = 0;
-    let imagesProcessed = 0;
+    const confidences = [];
 
-    // Process Front
-    if (detectSt.preview) {
-      const img = new Image();
-      img.src = detectSt.preview;
-      await new Promise(r => img.onload = r);
-      const res = await analyzeImage(img, detectSt.brand, detectSt.model);
-      finalDamages = [...res.damages];
-      combinedInference += res.inference_ms;
-      confidenceSum += res.assessment_confidence;
-      imagesProcessed++;
-    }
+    results.forEach((res, idx) => {
+      if (!res || !res.damages) return;
+      
+      if (idx === 0) {
+        // First image - add all damages
+        finalDamages = [...res.damages];
+      } else {
+        // Second image - merge without duplicates
+        res.damages.forEach(d => {
+          const isDuplicate = finalDamages.some(fd => fd.type === d.type);
+          if (!isDuplicate) finalDamages.push(d);
+        });
+      }
+      
+      combinedInference += res.inference_ms || 0;
+      confidences.push(res.assessment_confidence || 0);
+    });
 
-    // Process Back
-    if (detectSt.previewBack) {
-      const imgB = new Image();
-      imgB.src = detectSt.previewBack;
-      await new Promise(r => imgB.onload = r);
-      const resB = await analyzeImage(imgB, detectSt.brand, detectSt.model);
-      // Merge unique damage types or locations
-      resB.damages.forEach(d => {
-        if (!finalDamages.find(fd => fd.type === d.type && fd.location === d.location)) {
-          finalDamages.push(d);
-        }
-      });
-      combinedInference += resB.inference_ms;
-      confidenceSum += resB.assessment_confidence;
-      imagesProcessed++;
-    }
-
-    // Final Assessment
-    const avgConfidence = confidenceSum / imagesProcessed;
+    // Calculate final metrics
+    const avgConfidence = confidences.length > 0 ? confidences.reduce((a, b) => a + b) / confidences.length : 0;
     const sevOrder = { low: 1, medium: 2, high: 3, critical: 4 };
-    const maxSev = finalDamages.reduce((acc, d) => (sevOrder[d.severity] > sevOrder[acc] ? d.severity : acc), 'low');
+    const maxSev = finalDamages.length > 0
+      ? finalDamages.reduce((acc, d) => (sevOrder[d.severity] || 0) > (sevOrder[acc] || 0) ? d.severity : acc, 'low')
+      : 'low';
 
-    // Compute Dynamic Costs ASYNC
+    // Cost estimation
     const costData = await estimateTotalCost(detectSt.brand, finalDamages, detectSt.model);
 
+    // Build result object
     detectSt.result = {
       id: Date.now().toString(),
       brand: detectSt.brand,
@@ -273,7 +351,7 @@ async function runDetectAnalysis() {
       overall_severity: maxSev,
       assessment_confidence: avgConfidence,
       inference_ms: combinedInference,
-      repair_status: maxSev === 'critical' ? 'urgent' : 'pending',
+      repair_status: maxSev === 'critical' ? 'urgent' : maxSev === 'high' ? 'pending' : 'monitor',
       image_url: detectSt.preview,
       image_url_back: detectSt.previewBack,
       estimated_repair_cost: costData,
@@ -283,40 +361,103 @@ async function runDetectAnalysis() {
 
     detectSt.status = 'done';
     
+    // Save scan to database
     if (S.user) {
       await saveScan(S.user.uid, detectSt.result);
       S.scans.unshift(detectSt.result);
-      await addLog(S.user.uid, 'scan_complete', { damages: finalDamages.length });
+      await addLog(S.user.uid, 'scan_complete', { damages: finalDamages.length, confidence: Math.round(avgConfidence * 100) });
     }
     
     render();
     toast(t('analysis_complete'), 'success');
   } catch (e) {
+    console.error('[SmartSep AI] Analysis error:', e);
     detectSt.status = 'idle';
     render();
-    toast('AI analysis failed: ' + e.message, 'error');
+    // Show detailed error to user
+    const errorMsg = e.message || 'Unknown error occurred';
+    toast(`AI analysis failed: ${errorMsg}`, 'error');
+  } finally {
+    detectSt.isAnalyzing = false;
   }
 }
 
 function resetDetect() {
-  detectSt = { brand:'', model:'', file:null, preview:null, fileBack:null, previewBack:null, status:'idle', result:null };
+  detectSt = { brand:'', model:'', file:null, preview:null, fileBack:null, previewBack:null, status:'idle', result:null, showModal: false, isAnalyzing: false };
   render();
 }
 
 // ── Live Logic ─────────────────────────────────────────────
 let liveInterval = null;
 async function bindLive() {
+  // Preload AI model
   document.getElementById('preload-model-btn')?.addEventListener('click', async () => {
     await initModel();
     render();
   });
+
+  // Camera controls
   document.getElementById('start-cam')?.addEventListener('click', startCamera);
   document.getElementById('stop-cam')?.addEventListener('click', stopCamera);
   
+  // Sensitivity slider
   const sens = document.getElementById('sensitivity');
-  if (sens) sens.oninput = e => {
-    document.getElementById('sens-label').textContent = `Sensitivity (${e.target.value}%)`;
-  };
+  if (sens) {
+    sens.oninput = e => {
+      const val = e.target.value;
+      document.getElementById('sens-label').textContent = `High (${val}%)`;
+      // Store in state for real-time detection threshold
+      S.detectionThreshold = parseInt(val) / 100;
+      console.log('[Live] Threshold updated to', S.detectionThreshold);
+    };
+    // Initialize threshold on page load
+    S.detectionThreshold = parseInt(sens.value) / 100;
+  }
+
+  // Scan mode selector
+  const modeSelect = document.getElementById('live-mode');
+  if (modeSelect) {
+    modeSelect.oninput = e => {
+      S.liveMode = e.target.value;
+      console.log('[Live] Mode changed to', S.liveMode);
+    };
+    S.liveMode = modeSelect.value;
+  }
+
+  // Capture current frame for manual analysis
+  document.getElementById('capture-btn')?.addEventListener('click', async () => {
+    if (!S.camActive) return toast('Camera not active', 'error');
+    
+    try {
+      const video = document.querySelector('#cam-frame video');
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0);
+      
+      // Convert to blob and create file
+      canvas.toBlob(async (blob) => {
+        const file = new File([blob], 'capture_' + Date.now() + '.jpg', { type: 'image/jpeg' });
+        
+        // Simulate upload to detect page
+        detectSt.file = file;
+        detectSt.preview = canvas.toDataURL();
+        S.page = 'detect';
+        render();
+        
+        // Auto-trigger analysis
+        setTimeout(() => {
+          document.getElementById('analyze-btn')?.click();
+        }, 100);
+      }, 'image/jpeg', 0.92);
+      
+      toast('Frame captured! Go to detect tab', 'info');
+    } catch (e) {
+      console.error('[Capture]', e);
+      toast('Capture failed', 'error');
+    }
+  });
 }
 
 async function startCamera() {
@@ -336,48 +477,119 @@ async function startCamera() {
     const canvas = document.getElementById('live-canvas');
     const ctx = canvas.getContext('2d');
     
-    // Phase 3: Robust RAF Inference Loop
-    let lastTime = 0;
+    // Real-time detection loop with performance throttling
+    let lastAnalysisTime = 0;
+    const analysisInterval = 800; // Analyze every 0.8 seconds (~1.25 FPS)
+    let frameCount = 0;
+    let fpsTime = Date.now();
+    
     const process = async (now) => {
       if (!S.camActive) return;
       
-      // Control FPS: Throttle to ~2-3 FPS for performance on lower-end devices
-      if (now - lastTime > 400) {
-        lastTime = now;
-        if (!isModelLoaded()) {
-           toast('Warming up AI engine...', 'info');
-           await initModel();
-        }
-        if (isModelLoaded()) {
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          
-          const start = performance.now();
-          const res = await analyzeImage(video);
-          const end = performance.now();
-          
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          res.damages.forEach(d => {
-             if (d.bbox) {
-               ctx.strokeStyle = '#00e5ff';
-               ctx.lineWidth = 3;
-               ctx.strokeRect(d.bbox[0]*canvas.width, d.bbox[1]*canvas.height, d.bbox[2]*canvas.width, d.bbox[3]*canvas.height);
-             }
-          });
-          
-          const perf = Math.round(end - start);
-          document.getElementById('stat-det').textContent = res.damages.length;
-          document.getElementById('stat-inf').textContent = perf + 'ms';
-          document.getElementById('stat-fps').textContent = Math.round(1000/(now - lastTime)) || '—';
+      frameCount++;
+      
+      // Calculate FPS
+      const elapsed = Date.now() - fpsTime;
+      if (elapsed >= 1000) {
+        document.getElementById('stat-fps').textContent = frameCount + ' fps';
+        frameCount = 0;
+        fpsTime = Date.now();
+      }
+      
+      // Throttle analysis
+      if (Date.now() - lastAnalysisTime > analysisInterval) {
+        lastAnalysisTime = Date.now();
+        
+        try {
+          if (!isModelLoaded()) {
+            document.getElementById('stat-status').textContent = 'Loading model...';
+          } else {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            
+            const start = performance.now();
+            const result = await analyzeImage(video);
+            const duration = Math.round(performance.now() - start);
+            
+            if (result && result.damages && result.damages.length > 0) {
+              ctx.clearRect(0, 0, canvas.width, canvas.height);
+              
+              // Filter damages based on settings
+              let displayed = result.damages;
+              const threshold = S.detectionThreshold || 0.85;
+              const mode = S.liveMode || 'all';
+              
+              // Filter by confidence threshold
+              displayed = displayed.filter(d => d.confidence >= threshold);
+              
+              // Filter by scan mode
+              if (mode !== 'all') {
+                const modeMap = {
+                  'screen': ['screen_crack', 'display', 'glass'],
+                  'body': ['frame', 'bent_case', 'dent', 'battery_swelling'],
+                  'camera': ['camera_lens', 'camera_crack']
+                };
+                const allowedTypes = modeMap[mode] || [];
+                displayed = displayed.filter(d => allowedTypes.some(t => d.label.toLowerCase().includes(t)));
+              }
+              
+              document.getElementById('stat-det').textContent = result.damages.length + ' / ' + displayed.length + ' match';
+              document.getElementById('stat-status').textContent = displayed.length > 0 ? '🔴 DAMAGE DETECTED' : '✓ No damage';
+              
+              // Draw bounding boxes for matched damages
+              displayed.forEach((d, idx) => {
+                if (d.bbox) {
+                  const [x, y, w, h] = d.bbox;
+                  const scaleX = canvas.width / 640;
+                  const scaleY = canvas.height / 480;
+                  
+                  const color = {critical: '#FF3D6B', high: '#FF6B35', medium: '#FFB800', low: '#39D353'}[d.severity] || '#00E5FF';
+                  ctx.strokeStyle = color;
+                  ctx.lineWidth = 3;
+                  ctx.shadowColor = color;
+                  ctx.shadowBlur = 8;
+                  ctx.strokeRect(x*scaleX, y*scaleY, w*scaleX, h*scaleY);
+                  
+                  // Label with confidence
+                  ctx.shadowColor = 'rgba(0,0,0,0.5)';
+                  ctx.shadowBlur = 3;
+                  ctx.shadowOffsetX = 1;
+                  ctx.shadowOffsetY = 1;
+                  ctx.fillStyle = color;
+                  ctx.font = 'bold 13px monospace';
+                  const label = d.label.replace(/_/g, ' ') + ' ' + Math.round(d.confidence*100) + '%';
+                  ctx.fillText(label, x*scaleX + 5, y*scaleY - 8);
+                }
+              });
+              
+              document.getElementById('stat-inf').textContent = duration + 'ms';
+            } else {
+              ctx.clearRect(0, 0, canvas.width, canvas.height);
+              document.getElementById('stat-det').textContent = '0';
+              document.getElementById('stat-status').textContent = '✓ No damage detected';
+              document.getElementById('stat-inf').textContent = duration + 'ms';
+            }
+          }
+        } catch (e) {
+          console.warn('[Live] Detection:', e.message);
         }
       }
+      
       requestAnimationFrame(process);
     };
     requestAnimationFrame(process);
     
   } catch (e) {
-    toast('Camera failed: ' + e.message, 'error');
-    console.error(e);
+    if (e.name === 'NotAllowedError') {
+      const denied = document.getElementById('cam-denied');
+      if (denied) denied.style.display = 'block';
+      toast('Camera permission denied. Allow access and try again.', 'error');
+    } else if (e.name === 'NotFoundError') {
+      toast('No camera found on this device', 'error');
+    } else {
+      toast('Camera error: ' + e.message, 'error');
+    }
+    console.error('[Camera]', e);
   }
 }
 
@@ -557,6 +769,27 @@ async function bindBooking() {
 
 // ── Vendor Logic ───────────────────────────────────────────
 async function bindVendor() {
+  // Save vendor profile (name, phone, address, availability)
+  document.getElementById('save-vendor-profile-btn')?.addEventListener('click', async () => {
+    const name = document.getElementById('vnd-name')?.value;
+    const phone = document.getElementById('vnd-phone')?.value;
+    const address = document.getElementById('vnd-address')?.value;
+    const availability = document.getElementById('vnd-avail')?.value;
+    
+    if (!name || !phone) {
+      return toast('Name & phone required', 'error');
+    }
+    
+    try {
+      await saveVendor(S.user.uid, { name, phone, address, availability });
+      toast('Profile saved successfully', 'success');
+    } catch (err) {
+      console.error('[Vendor] Save failed:', err);
+      toast('Failed to save profile', 'error');
+    }
+  });
+
+  // Save vendor pricing
   document.getElementById('save-pricing-btn')?.addEventListener('click', async () => {
     const list = {};
     document.querySelectorAll('.vnd-price').forEach(inp => {
@@ -566,24 +799,76 @@ async function bindVendor() {
     toast('Pricing updated', 'success');
   });
 
+  // Accept pending request
   document.querySelectorAll('.vnd-accept-btn').forEach(btn => {
     btn.onclick = async () => {
       await updateBookingStatus(btn.dataset.id, 'accepted', 'Vendor accepted your request');
       refreshData();
     };
   });
+
+  // Reject pending request
+  document.querySelectorAll('.vnd-reject-btn').forEach(btn => {
+    btn.onclick = async () => {
+      await updateBookingStatus(btn.dataset.id, 'rejected', 'Vendor declined your request');
+      refreshData();
+    };
+  });
+
+  // Mark repair in progress
   document.querySelectorAll('.vnd-progress-btn').forEach(btn => {
     btn.onclick = async () => {
       await updateBookingStatus(btn.dataset.id, 'in_progress', 'Repairs started');
       refreshData();
     };
   });
+
+  // Upload after-repair photo
+  document.querySelectorAll('.vnd-after-btn').forEach(btn => {
+    btn.onclick = () => {
+      const fileInput = document.querySelector(`.after-photo-input[data-id="${btn.dataset.id}"]`);
+      fileInput?.click();
+    };
+  });
+
+  document.querySelectorAll('.after-photo-input').forEach(input => {
+    input.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      const bookingId = input.dataset.id;
+      if (!file) return;
+
+      try {
+        const reader = new FileReader();
+        reader.onload = async (evt) => {
+          toast('Uploading after photo...', 'info');
+          await updateBookingWithRepairImage(bookingId, evt.target.result);
+          toast('After photo uploaded', 'success');
+          refreshData();
+        };
+        reader.readAsDataURL(file);
+      } catch (err) {
+        console.error('[Vendor] Photo upload failed:', err);
+        toast('Photo upload failed', 'error');
+      }
+    });
+  });
+
+  // Mark repair complete & notify user
   document.querySelectorAll('.vnd-complete-btn').forEach(btn => {
     btn.onclick = async () => {
       await updateBookingStatus(btn.dataset.id, 'completed', 'Device ready for pickup');
       refreshData();
     };
   });
+
+  // Refresh vendor bookings
+  document.getElementById('refresh-vendor-btn')?.addEventListener('click', async () => {
+    toast('Refreshing bookings...', 'info');
+    S.vendorBookings = await getVendorBookings(S.user.uid);
+    renderPage();
+  });
+
+  // Chat with customer
   document.querySelectorAll('.chat-btn').forEach(btn => {
     btn.onclick = () => openChat(btn.dataset.bookingId);
   });
@@ -701,28 +986,6 @@ async function refreshData() {
   if (prof && prof.role === 'vendor') {
     S.vendorProfile = await getVendorProfile(S.user.uid);
   }
-  
-  if (prof && prof.role === 'admin') {
-     // Fetch Global Stats for Admin
-     const { collection, getDocs, orderBy, limit, query } = await import('firebase/firestore');
-     const { db } = await import('./firebase/config.js');
-     try {
-       const [uSnap, vSnap, sSnap, lSnap] = await Promise.all([
-         getDocs(collection(db, 'users')),
-         getDocs(collection(db, 'vendors')),
-         getDocs(collection(db, 'scans')),
-         getDocs(query(collection(db, 'logs'), orderBy('timestamp', 'desc'), limit(50)))
-       ]);
-       S.adminData = {
-         users: uSnap.docs.map(d => ({id:d.id, ...d.data()})),
-         vendors: vSnap.docs.map(d => ({id:d.id, ...d.data()})),
-         scans: sSnap.docs.map(d => ({id:d.id, ...d.data()})),
-         logs: lSnap.docs.map(d => ({id:d.id, ...d.data()}))
-       };
-     } catch (e) {
-       console.error('Admin data fetch error:', e);
-     }
-  }
   render();
 }
 
@@ -733,16 +996,13 @@ onAuthStateChanged(auth, async (user) => {
   if (user) {
     const profile = await saveUserProfile(user);
     await refreshData();
-    initModel(); // Background load
     
-    // Auto-seed devices if admin
-    if (profile?.role === 'admin') {
-      import('./utils/data.js').then(d => {
-        import('./utils/firestore-helpers.js').then(f => {
-          f.seedDevices(d.DEVICE_DATA);
-        });
-      });
-    }
+    // Lazy-load AI model in background (non-blocking)
+    // Defer to next tick to not block initial render
+    setTimeout(() => {
+      initModel().catch(e => console.warn('[Model] Background load failed:', e.message));
+    }, 2000);
+    
   } else {
     render();
   }

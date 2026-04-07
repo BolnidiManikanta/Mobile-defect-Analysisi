@@ -91,9 +91,9 @@ export function renderVendor(S) {
           <div class="field" style="margin-bottom:0">
             <label class="lbl">Availability</label>
             <select class="inp sel" id="vnd-avail">
-              <option value="open">Open Now</option>
-              <option value="closed">Closed</option>
-              <option value="by_appointment">By Appointment Only</option>
+              <option value="open" ${vendor.availability === 'open' ? 'selected' : ''}>Open Now</option>
+              <option value="closed" ${vendor.availability === 'closed' ? 'selected' : ''}>Closed</option>
+              <option value="by_appointment" ${vendor.availability === 'by_appointment' ? 'selected' : ''}>By Appointment Only</option>
             </select>
           </div>
           <button class="btn btn-primary btn-sm" id="save-vendor-profile-btn" style="margin-top:12px">
