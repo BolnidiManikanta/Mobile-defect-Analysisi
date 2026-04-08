@@ -9,7 +9,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "firebase": "^10.14.1"
+    "@tensorflow-models/coco-ssd": "^2.2.3",
+    "@tensorflow-models/mobilenet": "^2.1.1",
+    "@tensorflow/tfjs": "^4.22.0",
+    "firebase": "^10.14.1",
+    "jspdf": "^2.5.1"
   },
   "devDependencies": {
     "vite": "^5.2.0"

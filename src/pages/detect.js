@@ -103,7 +103,7 @@ export function renderDetectResult(d = {}) {
       <div class="rings-wrap"><div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div><div class="r-center"></div></div>
       <div style="font-family:'Syne',sans-serif;font-size:15px;font-weight:700;margin-bottom:6px">${t('analyzing')}</div>
       <div style="font-size:11.5px;color:var(--text-3);font-family:'JetBrains Mono',monospace;margin-bottom:16px">
-        Running AI Model · Processing ${d.brand||'device'}
+        TensorFlow.js ML · AI v4.0 Processing ${d.brand||'device'}
       </div>
       <div class="skeleton-line" style="width:70%;margin:6px auto"></div>
       <div class="skeleton-line" style="width:50%;margin:6px auto"></div>
@@ -118,60 +118,95 @@ export function renderDetectResult(d = {}) {
   const cost     = r.estimated_repair_cost;
   const primary  = (r.damages||[]).find(dmg => dmg.isPrimary) || r.damages?.[0];
   const secondary= (r.damages||[]).filter(dmg => !dmg.isPrimary);
+  const isVerifiedGood = !!r.no_damage_verified;
+  const noDamageFound = r.damages?.length === 0;
+  const inferenceTime = r.inference_ms || 0;
+
+  // Damage type emoji mapping
+  const damageEmoji = {
+    screen_broken: '📱💔',
+    screen_crack: '📱',
+    back_panel_broken: '🔙💔',
+    camera_broken: '📷❌',
+    display_damage: '🖥️',
+    water_damage: '💧',
+    frame_damage: '🔨',
+    scratches: '✏️',
+    battery_swelling: '🔋⚠️',
+    charging_port_damage: '🔌',
+  };
 
   return `<div class="fade-up">
     <!-- Summary Card -->
-    <div class="card" style="margin-bottom:10px;border-color:${sevColor}33">
+    <div class="card" style="margin-bottom:10px;border-color:${noDamageFound ? 'rgba(57,211,83,.3)' : sevColor + '33'}">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
         <div style="flex:1;min-width:0">
           <div style="font-family:'Syne',sans-serif;font-weight:800;font-size:15px;margin-bottom:6px">
-            ${r.brand} ${r.model}
+            ${r.brand || 'Device'} ${r.model || 'Analysis'}
           </div>
           <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px">
-            <span class="badge b-${r.overall_severity}">${r.overall_severity} severity</span>
-            <span class="badge b-${r.repair_status}">${r.repair_status}</span>
+            ${noDamageFound 
+              ? `<span class="badge" style="background:rgba(57,211,83,.15);color:var(--green)">✓ No Issues</span>`
+              : `<span class="badge b-${r.overall_severity}">${r.overall_severity} severity</span>`}
+            <span class="badge b-${r.repair_status}">${r.repair_status === 'none' ? 'Good Condition' : r.repair_status}</span>
             ${r.model_used ? `<span class="badge" style="background:rgba(0,229,255,.12);color:var(--cyan)">${r.model_used}</span>` : ''}
           </div>
           <div style="font-size:11px;color:var(--text-3);font-family:'JetBrains Mono',monospace">
             ${t('confidence')}: <span style="color:var(--cyan)">${Math.round((r.assessment_confidence||0)*100)}%</span>
-            · ${t('issues_detected')}: <span style="color:${sevColor}">${r.damages?.length||0}</span>
-            ${r.inference_ms ? ` · ${r.inference_ms}ms` : ''}
+            · ${t('issues_detected')}: <span style="color:${noDamageFound ? 'var(--green)' : sevColor}">${r.damages?.length||0}</span>
+            ${inferenceTime ? ` · ⚡${inferenceTime}ms` : ''}
           </div>
         </div>
         <div style="text-align:right;flex-shrink:0">
-          <div style="font-family:'Syne',sans-serif;font-size:32px;font-weight:800;color:${r.damages?.length === 0 ? 'var(--green)' : sevColor};line-height:1">
-            ${r.damages?.length || 0}
+          <div style="font-family:'Syne',sans-serif;font-size:32px;font-weight:800;color:${noDamageFound ? 'var(--green)' : sevColor};line-height:1">
+            ${noDamageFound ? '✓' : r.damages?.length || 0}
           </div>
-          <div style="font-size:9.5px;color:var(--text-3);font-family:'JetBrains Mono',monospace">ISSUES</div>
+          <div style="font-size:9.5px;color:var(--text-3);font-family:'JetBrains Mono',monospace">${noDamageFound ? 'CLEAN' : 'ISSUES'}</div>
         </div>
       </div>
       <div class="conf-bar" style="margin-top:10px">
-        <div class="conf-fill" style="width:${Math.round((r.assessment_confidence||0)*100)}%"></div>
+        <div class="conf-fill" style="width:${Math.round((r.assessment_confidence||0)*100)}%;background:${noDamageFound ? 'var(--green)' : ''}"></div>
       </div>
     </div>
 
-    <!-- No Damage Detected View -->
-    ${r.damages?.length === 0 ? `
-    <div class="card" style="text-align:center;padding:40px 20px;background:rgba(57,211,83,.05);border-color:rgba(57,211,83,.2)">
-      <div class="qa-ico" style="width:64px;height:64px;border-radius:20px;margin:0 auto 16px;background:rgba(57,211,83,.1)">
-        ${ico('check',32,'var(--green)')}
+    <!-- No Damage / Good Condition View -->
+    ${noDamageFound ? `
+    <div class="card" style="text-align:center;padding:40px 20px;background:rgba(57,211,83,.05);border-color:rgba(57,211,83,.25)">
+      <div class="qa-ico" style="width:72px;height:72px;border-radius:22px;margin:0 auto 18px;background:rgba(57,211,83,.12)">
+        ${ico('check',36,'var(--green)')}
       </div>
-      <div style="font-family:'Syne',sans-serif;font-weight:800;font-size:20px;margin-bottom:8px;color:var(--green)">
-        All Clear!
+      <div style="font-family:'Syne',sans-serif;font-weight:800;font-size:22px;margin-bottom:10px;color:var(--green)">
+        ${isVerifiedGood ? '✨ No Issue Found' : 'Device Looks Good'}
       </div>
-      <div style="font-size:13px;color:var(--text-2);max-width:280px;margin:0 auto;line-height:1.6">
-        Our AI system analyzed the device and found no significant surface damage or crack patterns.
+      <div style="font-size:14px;color:var(--text-2);max-width:320px;margin:0 auto;line-height:1.7">
+        ${isVerifiedGood
+          ? 'The AI deep scan found <strong style="color:var(--green)">no damage patterns</strong>. Your device appears to be in excellent condition with no visible defects.'
+          : 'No significant damage signals were detected. For best accuracy, ensure the image is well-lit and in focus.'}
       </div>
-      <div style="margin-top:20px;padding:12px;background:var(--ink-2);border-radius:10px;display:inline-block;border:1px solid var(--rim)">
-        <span style="font-size:11px;color:var(--text-3);font-family:'JetBrains Mono',monospace">VERIFICATION CONFIDENCE:</span>
-        <span style="font-size:11px;color:var(--green);font-weight:700;margin-left:6px">${Math.round((r.assessment_confidence||0)*100)}%</span>
+      <div style="margin-top:24px;display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+        <div style="padding:14px 20px;background:var(--ink-2);border-radius:12px;border:1px solid var(--rim);text-align:center">
+          <div style="font-size:10px;color:var(--text-3);font-family:'JetBrains Mono',monospace;margin-bottom:4px">SCAN RESULT</div>
+          <div style="font-size:16px;font-weight:800;color:var(--green)">PASSED ✓</div>
+        </div>
+        <div style="padding:14px 20px;background:var(--ink-2);border-radius:12px;border:1px solid var(--rim);text-align:center">
+          <div style="font-size:10px;color:var(--text-3);font-family:'JetBrains Mono',monospace;margin-bottom:4px">CONFIDENCE</div>
+          <div style="font-size:16px;font-weight:800;color:var(--cyan)">${Math.round((r.assessment_confidence||0)*100)}%</div>
+        </div>
+        <div style="padding:14px 20px;background:var(--ink-2);border-radius:12px;border:1px solid var(--rim);text-align:center">
+          <div style="font-size:10px;color:var(--text-3);font-family:'JetBrains Mono',monospace;margin-bottom:4px">SCAN TIME</div>
+          <div style="font-size:16px;font-weight:800;color:var(--text-1)">⚡${inferenceTime}ms</div>
+        </div>
       </div>
+      ${r.quality_score ? `
+      <div style="margin-top:16px;font-size:11px;color:var(--text-3)">
+        Image Quality: <span style="color:${r.quality_score > 0.7 ? 'var(--green)' : 'var(--amber)'}">${r.quality_score > 0.7 ? 'Good' : 'Fair'} (${Math.round(r.quality_score*100)}%)</span>
+      </div>` : ''}
     </div>` : ''}
 
     <!-- Bounding Box Canvas (if image present) -->
-    ${d.preview ? `
+    ${d.preview && !noDamageFound ? `
     <div class="card" style="margin-bottom:10px;padding:10px">
-      <div style="font-size:11px;color:var(--text-3);margin-bottom:8px;font-family:'JetBrains Mono',monospace">DAMAGE MAP</div>
+      <div style="font-size:11px;color:var(--text-3);margin-bottom:8px;font-family:'JetBrains Mono',monospace">🔍 DAMAGE MAP</div>
       <div style="position:relative;display:inline-block;width:100%">
         <img id="result-img" src="${d.preview}" style="width:100%;border-radius:8px;display:block;max-height:220px;object-fit:contain" alt="Analyzed device"/>
         <canvas id="bbox-canvas" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none"></canvas>
@@ -181,17 +216,21 @@ export function renderDetectResult(d = {}) {
     <!-- Primary Issue -->
     ${primary ? `
     <div class="card" style="margin-bottom:10px;border-left:3px solid ${sevColor}">
-      <div style="font-size:10px;color:var(--text-3);font-family:'JetBrains Mono',monospace;margin-bottom:6px">${t('primary_issue')}</div>
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-        <div style="font-size:13.5px;font-weight:700">${primary.label}</div>
+      <div style="font-size:10px;color:var(--text-3);font-family:'JetBrains Mono',monospace;margin-bottom:6px">🔴 ${t('primary_issue')}</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <div style="font-size:15px;font-weight:700;display:flex;align-items:center;gap:8px">
+          <span style="font-size:18px">${damageEmoji[primary.type] || '⚠️'}</span>
+          ${primary.label}
+        </div>
         <span class="badge b-${primary.severity}">${primary.severity}</span>
       </div>
-      <div style="font-size:12px;color:var(--text-2);line-height:1.6;margin-bottom:6px">${primary.description}</div>
-      <div style="font-size:10.5px;color:var(--text-3);font-family:'JetBrains Mono',monospace;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+      <div style="font-size:12px;color:var(--text-2);line-height:1.65;margin-bottom:8px">${primary.description}</div>
+      <div style="font-size:10.5px;color:var(--text-3);font-family:'JetBrains Mono',monospace;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         ${ico('pin',10,'var(--text-3)')} ${primary.location}
-        ${primary.affects_function ? `<span class="badge b-high" style="font-size:9px">${t('affects_function')}</span>` : ''}
+        ${primary.affects_function ? `<span class="badge b-high" style="font-size:9px">⚡ ${t('affects_function')}</span>` : ''}
+        <span style="color:var(--cyan)">Confidence: ${Math.round(primary.confidence*100)}%</span>
       </div>
-      <div class="conf-bar" style="margin-top:8px">
+      <div class="conf-bar" style="margin-top:10px">
         <div class="conf-fill" style="width:${Math.round(primary.confidence*100)}%"></div>
       </div>
     </div>` : ''}
@@ -199,21 +238,53 @@ export function renderDetectResult(d = {}) {
     <!-- Secondary Issues -->
     ${secondary.length > 0 ? `
     <div class="card" style="margin-bottom:10px">
-      <div style="font-size:10px;color:var(--text-3);font-family:'JetBrains Mono',monospace;margin-bottom:10px">${t('secondary_issues')} (${secondary.length})</div>
+      <div style="font-size:10px;color:var(--text-3);font-family:'JetBrains Mono',monospace;margin-bottom:12px">🟡 ${t('secondary_issues')} (${secondary.length})</div>
       ${secondary.map(dmg => `
-        <div class="dmg-item">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px">
-            <div style="font-size:13px;font-weight:600">${dmg.label}</div>
+        <div class="dmg-item" style="padding:12px;background:var(--ink-2);border-radius:8px;margin-bottom:8px;border:1px solid var(--rim)">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+            <div style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px">
+              <span style="font-size:14px">${damageEmoji[dmg.type] || '⚠️'}</span>
+              ${dmg.label}
+            </div>
             <span class="badge b-${dmg.severity}">${dmg.severity}</span>
           </div>
-          <div style="font-size:12px;color:var(--text-2);line-height:1.55;margin-bottom:4px">${dmg.description}</div>
-          <div style="font-size:10.5px;color:var(--text-3);font-family:'JetBrains Mono',monospace">
+          <div style="font-size:12px;color:var(--text-2);line-height:1.55;margin-bottom:6px">${dmg.description}</div>
+          <div style="font-size:10.5px;color:var(--text-3);font-family:'JetBrains Mono',monospace;display:flex;align-items:center;gap:6px">
             ${ico('pin',10,'var(--text-3)')} ${dmg.location}
+            ${dmg.affects_function ? `<span class="badge b-high" style="font-size:9px">⚡ Affects Function</span>` : ''}
           </div>
-          <div class="conf-bar" style="margin-top:6px">
+          <div class="conf-bar" style="margin-top:8px">
             <div class="conf-fill" style="width:${Math.round(dmg.confidence*100)}%"></div>
           </div>
         </div>`).join('')}
+    </div>` : ''}
+
+    <!-- Damage Summary (when damages found) -->
+    ${!noDamageFound && r.damages?.length > 0 ? `
+    <div class="card" style="margin-bottom:10px;background:rgba(255,59,107,.04);border-color:rgba(255,59,107,.15)">
+      <div style="font-size:10px;color:var(--text-3);font-family:'JetBrains Mono',monospace;margin-bottom:10px">📊 DAMAGE SUMMARY</div>
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px">
+        <div style="padding:12px;background:var(--ink-2);border-radius:10px;border:1px solid var(--rim);text-align:center">
+          <div style="font-size:10px;color:var(--text-3);margin-bottom:4px">TOTAL ISSUES</div>
+          <div style="font-size:20px;font-weight:800;color:${sevColor}">${r.damages.length}</div>
+        </div>
+        <div style="padding:12px;background:var(--ink-2);border-radius:10px;border:1px solid var(--rim);text-align:center">
+          <div style="font-size:10px;color:var(--text-3);margin-bottom:4px">SEVERITY</div>
+          <div style="font-size:20px;font-weight:800;color:${sevColor};text-transform:uppercase">${r.overall_severity}</div>
+        </div>
+        <div style="padding:12px;background:var(--ink-2);border-radius:10px;border:1px solid var(--rim);text-align:center">
+          <div style="font-size:10px;color:var(--text-3);margin-bottom:4px">AFFECTS FUNCTION</div>
+          <div style="font-size:20px;font-weight:800;color:${r.damages.some(d => d.affects_function) ? 'var(--rose)' : 'var(--green)'}">
+            ${r.damages.filter(d => d.affects_function).length > 0 ? 'YES' : 'NO'}
+          </div>
+        </div>
+        <div style="padding:12px;background:var(--ink-2);border-radius:10px;border:1px solid var(--rim);text-align:center">
+          <div style="font-size:10px;color:var(--text-3);margin-bottom:4px">REPAIR STATUS</div>
+          <div style="font-size:14px;font-weight:800;color:${r.repair_status === 'urgent' ? 'var(--rose)' : 'var(--amber)'}">
+            ${r.repair_status.toUpperCase()}
+          </div>
+        </div>
+      </div>
     </div>` : ''}
 
     <!-- Cost Estimation -->
@@ -259,8 +330,10 @@ export function renderDetectResult(d = {}) {
 
     <!-- Actions -->
     <div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${!noDamageFound ? `
       <button class="btn btn-primary btn-sm" data-page="shops">${ico('map',12,'#050608')} ${t('find_repair_shop')}</button>
       <button class="btn btn-ghost btn-sm" data-page="booking">${ico('check',12)} ${t('book_repair')}</button>
+      ` : ''}
       <button class="btn btn-ghost btn-sm" id="d-reset-2">${ico('rf',12)} ${t('new_scan_btn')}</button>
     </div>
   </div>`;

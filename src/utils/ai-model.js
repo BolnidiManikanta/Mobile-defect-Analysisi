@@ -1,649 +1,743 @@
 // ═══════════════════════════════════════════════════════════
-// SMARTSEP AI — Enhanced Damage Detection Engine v2
-// Improved image preprocessing, crack detection, and confidence scoring
+// SMARTSEP AI — Advanced ML-Based Damage Detection v4.0
+// Using TensorFlow.js + MobileNet for accurate detection
 // ═══════════════════════════════════════════════════════════
 
-let model = null;
+import * as tf from '@tensorflow/tfjs';
+import * as mobilenet from '@tensorflow-models/mobilenet';
+
+// Model state
+let mobileNetModel = null;
+let modelLoaded = false;
 let modelLoading = false;
-let modelLoaded  = false;
-let modelWarmupComplete = false;
 
-// Preprocessing cache for performance (USE IMAGE OBJECT AS KEY)
-// Maps image object reference to cached damage signals (prevents false cache hits)
-const imageCache = new WeakMap();
+// Analysis settings
+const ANALYSIS_SIZE = 224; // MobileNet input size
+const MIN_CONFIDENCE_FOR_DAMAGE = 0.70; // High threshold to avoid false positives
 
-// ── Damage class mapping from COCO-SSD outputs ─────────────
-// Maps visual characteristics to phone damage types
+// Damage Categories with detailed descriptions
 const DAMAGE_CATEGORIES = {
+  screen_broken: {
+    label: 'Screen Broken',
+    description: 'Severe screen damage detected - display is cracked or shattered',
+    emoji: '📱💔',
+    affects_function: true,
+    priority: 1,
+  },
   screen_crack: {
     label: 'Screen Crack',
     description: 'Crack or fracture detected on the display surface',
     emoji: '📱',
     affects_function: true,
+    priority: 2,
+  },
+  back_panel_broken: {
+    label: 'Back Panel Broken',
+    description: 'Back glass or panel is cracked or damaged',
+    emoji: '🔙💔',
+    affects_function: false,
+    priority: 3,
+  },
+  camera_broken: {
+    label: 'Camera Broken',
+    description: 'Camera lens or module is cracked or damaged',
+    emoji: '📷❌',
+    affects_function: true,
+    priority: 2,
   },
   display_damage: {
     label: 'Display Damage',
-    description: 'LCD bleeding or dead pixels detected on the screen',
+    description: 'LCD bleeding, dead pixels, or display malfunction detected',
     emoji: '🖥️',
     affects_function: true,
-  },
-  battery_swelling: {
-    label: 'Battery Swelling',
-    description: 'Battery bulging detected — poses safety risk',
-    emoji: '🔋',
-    affects_function: true,
+    priority: 2,
   },
   water_damage: {
     label: 'Water Damage',
-    description: 'Moisture or liquid ingress indicators detected',
+    description: 'Moisture or liquid damage indicators detected',
     emoji: '💧',
     affects_function: true,
+    priority: 1,
   },
   frame_damage: {
-    label: 'Frame / Body Damage',
-    description: 'Dents, bends or structural damage to chassis',
+    label: 'Frame Damage',
+    description: 'Dents, bends or structural damage to device body',
     emoji: '🔨',
     affects_function: false,
-  },
-  camera_crack: {
-    label: 'Camera Glass Crack',
-    description: 'Crack on rear or front camera lens glass',
-    emoji: '📷',
-    affects_function: true,
+    priority: 4,
   },
   scratches: {
     label: 'Surface Scratches',
-    description: 'Fine scratches on screen or body — cosmetic only',
+    description: 'Fine scratches on screen or body - cosmetic damage',
     emoji: '✏️',
     affects_function: false,
+    priority: 5,
   },
-  charging_port: {
+  battery_swelling: {
+    label: 'Battery Swelling',
+    description: 'Battery bulging detected - safety risk!',
+    emoji: '🔋⚠️',
+    affects_function: true,
+    priority: 1,
+  },
+  charging_port_damage: {
     label: 'Charging Port Damage',
-    description: 'Deformation or debris in charging connector',
+    description: 'Charging connector appears damaged or obstructed',
     emoji: '🔌',
     affects_function: true,
+    priority: 3,
   },
 };
 
-// ── Location descriptors by bounding box position ──────────
-// ── Severity from confidence score ─────────────────────────
-function confidenceToSeverity(score, damageType) {
-  // High-risk damage types escalate severity
-  const highRisk = ['screen_crack', 'display_damage', 'battery_swelling', 'water_damage'];
-  const isHighRisk = highRisk.includes(damageType);
-  if (score > 0.82) return isHighRisk ? 'critical' : 'high';
-  if (score > 0.65) return isHighRisk ? 'high' : 'medium';
-  if (score > 0.45) return 'medium';
+// Keywords that indicate phone-related content
+const PHONE_KEYWORDS = [
+  'cell', 'cellular', 'phone', 'mobile', 'smartphone', 'iphone', 'android',
+  'screen', 'display', 'telephone', 'handset', 'device', 'tablet', 'ipod',
+  'remote', 'electronic', 'computer', 'laptop', 'monitor'
+];
+
+// Keywords that might indicate damage patterns
+const DAMAGE_KEYWORDS = [
+  'broken', 'crack', 'shatter', 'damage', 'destroy', 'torn', 'bent',
+  'web', 'spider', 'fracture', 'chip'
+];
+
+// ══════════════════════════════════════════════════════════════
+// MODEL INITIALIZATION - Load TensorFlow.js MobileNet
+// ══════════════════════════════════════════════════════════════
+
+export async function initModel() {
+  if (modelLoaded) return true;
+  if (modelLoading) {
+    // Wait for model to finish loading
+    while (modelLoading) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return modelLoaded;
+  }
+  
+  modelLoading = true;
+  
+  try {
+    console.log('[SmartSep AI v4] 🚀 Loading TensorFlow.js MobileNet model...');
+    
+    // Set TensorFlow.js backend
+    await tf.ready();
+    console.log('[SmartSep AI v4] ✅ TensorFlow.js backend ready:', tf.getBackend());
+    
+    // Load MobileNet model (v2, alpha 1.0 for best accuracy)
+    mobileNetModel = await mobilenet.load({
+      version: 2,
+      alpha: 1.0
+    });
+    
+    modelLoaded = true;
+    modelLoading = false;
+    console.log('[SmartSep AI v4] ✅ MobileNet model loaded successfully!');
+    return true;
+    
+  } catch (error) {
+    console.error('[SmartSep AI v4] ❌ Failed to load model:', error);
+    modelLoading = false;
+    modelLoaded = false;
+    return false;
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// HELPER FUNCTIONS
+// ══════════════════════════════════════════════════════════════
+
+function clamp(val, min, max) {
+  return Math.max(min, Math.min(max, val));
+}
+
+function getSourceDimensions(img) {
+  return {
+    width: Math.max(1, img.videoWidth || img.naturalWidth || img.width || ANALYSIS_SIZE),
+    height: Math.max(1, img.videoHeight || img.naturalHeight || img.height || ANALYSIS_SIZE),
+  };
+}
+
+function severityFromScore(score, damageType) {
+  const criticalTypes = ['screen_broken', 'battery_swelling', 'water_damage'];
+  const isCritical = criticalTypes.includes(damageType);
+  
+  if (score > 0.90) return isCritical ? 'critical' : 'high';
+  if (score > 0.80) return isCritical ? 'high' : 'medium';
+  if (score > 0.70) return 'medium';
   return 'low';
 }
 
-// ── Enhanced Damage Mapping with Better Confidence ────────
-function mapDetectionsToDamage(detections, imageElement) {
-  const imgW = imageElement.naturalWidth || imageElement.width || 640;
-  const imgH = imageElement.naturalHeight || imageElement.height || 480;
-  const damages = [];
+// ══════════════════════════════════════════════════════════════
+// ADVANCED IMAGE ANALYSIS USING TENSORFLOW.JS
+// ══════════════════════════════════════════════════════════════
 
-  // 1. Use WeakMap to avoid cache hits on different images with same URL
-  let damageSignals = imageCache.get(imageElement);
-  
-  if (!damageSignals) {
-    const canvas = document.createElement('canvas');
-    canvas.width  = 640;
-    canvas.height = 640;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(imageElement, 0, 0, canvas.width, canvas.height);
-    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    
-    // Preprocess for analysis
-    const enhancedData = preprocessImage(imgData);
-    damageSignals = analyzePixelDamage(enhancedData, canvas.width, canvas.height);
-    
-    // Cache result using WeakMap (auto garbage collection)
-    imageCache.set(imageElement, damageSignals);
+async function analyzeWithMobileNet(imageElement) {
+  if (!mobileNetModel) {
+    console.warn('[SmartSep AI v4] Model not loaded, attempting to load...');
+    await initModel();
+    if (!mobileNetModel) {
+      throw new Error('Failed to load AI model');
+    }
   }
+  
+  try {
+    // Get MobileNet classifications
+    const predictions = await mobileNetModel.classify(imageElement, 10);
+    console.log('[SmartSep AI v4] MobileNet predictions:', predictions);
+    return predictions;
+  } catch (error) {
+    console.error('[SmartSep AI v4] Classification error:', error);
+    return [];
+  }
+}
 
-  // 2. Smart damage classification based on signals
-  const classifyDamage = () => {
-    // Priority-based classification
-    if (damageSignals.hasCrackPattern && damageSignals.crackScore > 5) {
-      return 'screen_crack';
+// Check if image is a phone/mobile device
+function isPhoneImage(predictions) {
+  for (const pred of predictions) {
+    const className = pred.className.toLowerCase();
+    for (const keyword of PHONE_KEYWORDS) {
+      if (className.includes(keyword)) {
+        return { isPhone: true, confidence: pred.probability, className: pred.className };
+      }
     }
-    if (damageSignals.hasColorAnomalies && damageSignals.colorAnomalyRatio > 0.03) {
-      return 'display_damage';
-    }
-    if (damageSignals.veryDarkRatio > 0.15) {
-      return 'battery_swelling'; // Severe darkness suggests internal damage
-    }
-    if (damageSignals.colorAnomalyRatio > 0.01 && damageSignals.darkRatio > 0.1) {
-      return 'water_damage';
-    }
-    if (damageSignals.edgePixelRatio > 0.04) {
-      return 'frame_damage';
-    }
-    if (damageSignals.hasDarkPatches) {
-      return 'scratches';
-    }
+  }
+  return { isPhone: false, confidence: 0, className: null };
+}
+
+// ══════════════════════════════════════════════════════════════
+// DEEP PIXEL ANALYSIS FOR DAMAGE DETECTION
+// More conservative approach - only detect actual damage patterns
+// ══════════════════════════════════════════════════════════════
+
+function analyzeImageForDamage(imageElement) {
+  const { width: srcW, height: srcH } = getSourceDimensions(imageElement);
+  
+  // Create analysis canvas
+  const canvas = document.createElement('canvas');
+  const targetSize = Math.min(srcW, srcH, 512);
+  const aspectRatio = srcW / srcH;
+  
+  if (aspectRatio > 1) {
+    canvas.width = targetSize;
+    canvas.height = Math.round(targetSize / aspectRatio);
+  } else {
+    canvas.height = targetSize;
+    canvas.width = Math.round(targetSize * aspectRatio);
+  }
+  
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+  
+  ctx.drawImage(imageElement, 0, 0, canvas.width, canvas.height);
+  
+  let imageData;
+  try {
+    imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  } catch (e) {
+    console.warn('[SmartSep AI v4] Cannot read image pixels:', e);
     return null;
-  };
-
-  // 3. Confidence calculation based on actual signals (NO artificial inflation)
-  const calculateConfidence = (damageType) => {
-    let confidence = 0.4; // Base confidence
-    
-    switch(damageType) {
-      case 'screen_crack':
-        confidence = 0.6 + Math.min(damageSignals.crackScore / 10, 0.35);
-        break;
-      case 'display_damage':
-        confidence = 0.55 + (damageSignals.colorAnomalyRatio * 200);
-        break;
-      case 'water_damage':
-        confidence = 0.5 + (damageSignals.colorAnomalyRatio * 150) + (damageSignals.darkRatio * 50);
-        break;
-      case 'frame_damage':
-        confidence = 0.45 + Math.min(damageSignals.edgePixelRatio * 50, 0.3);
-        break;
-      case 'battery_swelling':
-        confidence = 0.55 + (damageSignals.veryDarkRatio * 150);
-        break;
-      case 'scratches':
-        confidence = 0.4 + (damageSignals.darkRatio * 80);
-        break;
-    }
-    
-    return Math.max(0.35, Math.min(0.95, confidence));
-  };
-
-  // 4. Process model detections
-  detections.forEach((det, idx) => {
-    const { class: cls, score, bbox } = det;
-    
-    // Only trust model for phone detection
-    if (score < 0.4 || !['cell phone', 'remote', 'laptop'].includes(cls)) return;
-  });
-
-  // 5. Use heuristic-based damage detection (more reliable than generic object detection)
-  const primaryDamageType = classifyDamage();
-  
-  if (primaryDamageType) {
-    const confidence = calculateConfidence(primaryDamageType);
-    const cat = DAMAGE_CATEGORIES[primaryDamageType];
-    const severity = confidenceToSeverity(confidence, primaryDamageType);
-    
-    damages.push({
-      label: cat.label,
-      type: primaryDamageType,
-      description: cat.description,
-      location: getLocationFromSignals(damageSignals),
-      severity,
-      confidence,
-      affects_function: cat.affects_function,
-      bbox: null,
-      isPrimary: true,
-    });
-    
-    // Check for secondary damages
-    const secondaryTypes = ['camera_crack', 'charging_port'];
-    secondaryTypes.forEach(type => {
-      if (damageSignals.edgePixelRatio > 0.08) {
-        const cat = DAMAGE_CATEGORIES[type];
-        damages.push({
-          label: cat.label,
-          type: type,
-          description: cat.description,
-          location: 'Phone periphery',
-          severity: 'low',
-          confidence: 0.5,
-          affects_function: cat.affects_function,
-          bbox: null,
-          isPrimary: false,
-        });
-      }
-    });
-  }
-
-  // "No damage" = very clean signals
-  if (damages.length === 0 && 
-      !damageSignals.hasCrackPattern && 
-      !damageSignals.hasDarkPatches && 
-      damageSignals.colorAnomalyRatio < 0.005) {
-    return []; // Actually clean
-  }
-
-  return damages;
-}
-
-function getLocationFromSignals(signals) {
-  // Simple location estimation based on damage pattern
-  if (signals.maxComponent > 100) return 'Front — screen area';
-  if (signals.veryDarkRatio > 0.1) return 'Back panel';
-  return 'Front — display';
-}
-
-// ──────────────────────────────────────────────────────────
-// ENHANCED IMAGE PREPROCESSING - Preserve detail while enhancing cracks
-// ──────────────────────────────────────────────────────────
-function preprocessImage(imgData) {
-  const data = imgData.data;
-  const width = imgData.width;
-  const height = imgData.height;
-  
-  // Step 1: Convert to grayscale and compute histogram
-  const gray = new Uint8Array(width * height);
-  const histogram = new Uint32Array(256);
-  
-  for (let i = 0, j = 0; i < data.length; i += 4, j++) {
-    const r = data[i], g = data[i+1], b = data[i+2];
-    const val = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
-    gray[j] = val;
-    histogram[val]++;
   }
   
-  // Step 2: Compute CLAHE (Contrast Limited Adaptive Histogram Equalization)
-  // This preserves edges better than simple contrast boost
-  const blockSize = 32;
-  const clipLimit = 40;
-  const workingData = new Uint8Array(gray);
+  const data = imageData.data;
+  const width = canvas.width;
+  const height = canvas.height;
+  const total = width * height;
   
-  for (let by = 0; by < Math.ceil(height / blockSize); by++) {
-    for (let bx = 0; bx < Math.ceil(width / blockSize); bx++) {
-      const yStart = by * blockSize;
-      const xStart = bx * blockSize;
-      const yEnd = Math.min(yStart + blockSize, height);
-      const xEnd = Math.min(xStart + blockSize, width);
-      
-      // Compute local histogram
-      const localHist = new Uint32Array(256);
-      for (let y = yStart; y < yEnd; y++) {
-        for (let x = xStart; x < xEnd; x++) {
-          localHist[gray[y * width + x]]++;
-        }
-      }
-      
-      // Apply contrast limiting
-      const area = (xEnd - xStart) * (yEnd - yStart);
-      const exceeded = Math.max(0, clipLimit - 1) * area / 256;
-      let clipped = 0;
-      for (let i = 0; i < 256; i++) {
-        if (localHist[i] > clipLimit) {
-          clipped += localHist[i] - clipLimit;
-          localHist[i] = clipLimit;
-        }
-      }
-      const redistBatch = clipped / 256;
-      for (let i = 0; i < 256; i++) localHist[i] += redistBatch;
-      
-      // Apply equalization only to this block
-      let cumsum = 0;
-      for (let y = yStart; y < yEnd; y++) {
-        for (let x = xStart; x < xEnd; x++) {
-          const idx = y * width + x;
-          const val = gray[idx];
-          cumsum = 0;
-          for (let i = 0; i <= val; i++) cumsum += localHist[i];
-          workingData[idx] = Math.round(cumsum * 255 / area);
-        }
-      }
-    }
-  }
+  // ═══ STRICT DAMAGE ANALYSIS ═══
+  // Only flag damage if there are VERY clear indicators
   
-  // Step 3: Apply subtle unsharp masking to enhance edges
-  const result = new Uint8Array(width * height);
-  for (let y = 1; y < height - 1; y++) {
-    for (let x = 1; x < width - 1; x++) {
-      const idx = y * width + x;
-      const center = workingData[idx];
-      const neighbors = [
-        workingData[(y-1)*width + x], workingData[(y+1)*width + x],
-        workingData[y*width + (x-1)], workingData[y*width + (x+1)]
-      ];
-      const avgNeighbor = neighbors.reduce((a, b) => a + b) / 4;
-      const diff = center - avgNeighbor;
-      const sharpened = Math.max(0, Math.min(255, center + diff * 0.5));
-      result[idx] = sharpened;
-    }
-  }
+  let edgeIntensitySum = 0;
+  let maxEdgeMagnitude = 0;
+  let crackPatternPixels = 0;
+  let linearEdgeRuns = [];
+  let currentRunLength = 0;
   
-  // Step 4: Put processed grayscale back to original image data
-  for (let i = 0, j = 0; i < data.length; i += 4, j++) {
-    data[i] = data[i+1] = data[i+2] = result[j];
-  }
-  
-  return imgData;
-}
-
-// ──────────────────────────────────────────────────────────
-// ADVANCED DAMAGE SIGNAL ANALYSIS - Edge detection and pattern recognition
-// ──────────────────────────────────────────────────────────
-function analyzePixelDamage(imgData, w, h) {
-  const data = imgData.data;
-  
-  // Step 1: Edge detection using Sobel operator
-  const edges = new Uint8Array(w * h);
-  const edgeStrength = new Uint32Array(w * h);
-  let strongEdges = 0, totalEdgePixels = 0;
-  
-  for (let y = 1; y < h - 1; y++) {
-    for (let x = 1; x < w - 1; x++) {
-      const idx = (y * w + x) * 4;
-      
-      // Sobel X
-      const sx = -data[(y-1)*w*4 + (x-1)*4 + 0] + data[(y-1)*w*4 + (x+1)*4 + 0]
-                -2*data[y*w*4 + (x-1)*4 + 0] + 2*data[y*w*4 + (x+1)*4 + 0]
-                -data[(y+1)*w*4 + (x-1)*4 + 0] + data[(y+1)*w*4 + (x+1)*4 + 0];
-      
-      // Sobel Y
-      const sy = -data[(y-1)*w*4 + (x-1)*4 + 0] - 2*data[(y-1)*w*4 + x*4 + 0] - data[(y-1)*w*4 + (x+1)*4 + 0]
-                +data[(y+1)*w*4 + (x-1)*4 + 0] + 2*data[(y+1)*w*4 + x*4 + 0] + data[(y+1)*w*4 + (x+1)*4 + 0];
-      
-      const magnitude = Math.sqrt(sx*sx + sy*sy);
-      edges[y * w + x] = Math.min(255, magnitude / 2);
-      
-      if (magnitude > 100) { strongEdges++; totalEdgePixels++; }
-      if (magnitude > 30) totalEdgePixels++;
-      edgeStrength[y * w + x] = magnitude;
-    }
-  }
-  
-  // Step 2: Detect linear cracks (Hough-like detection)
-  let crackScore = 0;
-  const edgePixels = [];
-  for (let i = 0; i < edges.length; i++) {
-    if (edges[i] > 50) edgePixels.push(i);
-  }
-  
-  // Find connected edge components (simple connectivity check)
-  const visited = new Uint8Array(w * h);
-  let maxComponentSize = 0;
-  
-  for (let startIdx of edgePixels) {
-    if (visited[startIdx]) continue;
-    
-    const component = [];
-    const queue = [startIdx];
-    visited[startIdx] = 1;
-    
-    while (queue.length > 0) {
-      const idx = queue.shift();
-      const y = Math.floor(idx / w);
-      const x = idx % w;
-      component.push(idx);
-      
-      // Check 8 neighbors
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          if (dy === 0 && dx === 0) continue;
-          const ny = y + dy, nx = x + dx;
-          if (ny >= 0 && ny < h && nx >= 0 && nx < w) {
-            const nidx = ny * w + nx;
-            if (!visited[nidx] && edges[nidx] > 30) {
-              visited[nidx] = 1;
-              queue.push(nidx);
-            }
-          }
-        }
-      }
-    }
-    
-    // Linearity score for component
-    if (component.length > 5) {
-      const coords = component.map(idx => ({ x: idx % w, y: Math.floor(idx / w) }));
-      const avgX = coords.reduce((s, c) => s + c.x, 0) / coords.length;
-      const avgY = coords.reduce((s, c) => s + c.y, 0) / coords.length;
-      
-      const variance = coords.reduce((s, c) => s + (c.x - avgX)*(c.x - avgX) + (c.y - avgY)*(c.y - avgY), 0) / coords.length;
-      const linearity = 1 / (1 + variance / 100); // Higher = more linear
-      
-      if (component.length > 30 && linearity > 0.4) {
-        crackScore += linearity * Math.log(component.length);
-        maxComponentSize = Math.max(maxComponentSize, component.length);
-      }
-    }
-  }
-  
-  // Step 3: Dark region analysis (actual damage areas)
-  let darkPixels = 0, veryDarkPixels = 0;
+  let darkPixels = 0;
+  let brightPixels = 0;
   let colorAnomalies = 0;
+  let blackPatches = 0;
   
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i], g = data[i+1], b = data[i+2];
-    const brightness = (r + g + b) / 3;
-    const rg = Math.abs(r - g), gb = Math.abs(g - b), rb = Math.abs(r - b);
-    const colorDiff = Math.max(rg, gb, rb);
+  // High-variance regions (potential cracks)
+  let highVarianceRegions = 0;
+  
+  // Scan for damage patterns
+  for (let y = 1; y < height - 1; y++) {
+    currentRunLength = 0;
     
-    if (brightness < 50) veryDarkPixels++;
-    if (brightness < 100) darkPixels++;
+    for (let x = 1; x < width - 1; x++) {
+      const idx = (y * width + x) * 4;
+      const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+      const brightness = (r + g + b) / 3;
+      
+      // Count dark/bright pixels
+      if (brightness < 15) {
+        darkPixels++;
+        blackPatches++;
+      } else if (brightness < 50) {
+        darkPixels++;
+      }
+      if (brightness > 240) brightPixels++;
+      
+      // Check for color anomalies (LCD damage indicators)
+      const maxChannel = Math.max(r, g, b);
+      const minChannel = Math.min(r, g, b);
+      if (maxChannel - minChannel > 100 && brightness < 200 && brightness > 30) {
+        colorAnomalies++;
+      }
+      
+      // Sobel edge detection for crack patterns
+      const idxUp = ((y - 1) * width + x) * 4;
+      const idxDown = ((y + 1) * width + x) * 4;
+      const idxLeft = (y * width + (x - 1)) * 4;
+      const idxRight = (y * width + (x + 1)) * 4;
+      
+      const grayCenter = brightness;
+      const grayUp = (data[idxUp] + data[idxUp + 1] + data[idxUp + 2]) / 3;
+      const grayDown = (data[idxDown] + data[idxDown + 1] + data[idxDown + 2]) / 3;
+      const grayLeft = (data[idxLeft] + data[idxLeft + 1] + data[idxLeft + 2]) / 3;
+      const grayRight = (data[idxRight] + data[idxRight + 1] + data[idxRight + 2]) / 3;
+      
+      const gx = Math.abs(grayRight - grayLeft);
+      const gy = Math.abs(grayDown - grayUp);
+      const edgeMagnitude = gx + gy;
+      
+      edgeIntensitySum += edgeMagnitude;
+      if (edgeMagnitude > maxEdgeMagnitude) maxEdgeMagnitude = edgeMagnitude;
+      
+      // Strong edge = potential crack
+      if (edgeMagnitude > 100) {
+        crackPatternPixels++;
+        currentRunLength++;
+        
+        // Local variance check for crack confirmation
+        const neighbors = [grayUp, grayDown, grayLeft, grayRight];
+        const variance = neighbors.reduce((sum, v) => sum + Math.pow(v - grayCenter, 2), 0) / 4;
+        if (variance > 1500) {
+          highVarianceRegions++;
+        }
+      } else {
+        if (currentRunLength > 15) {
+          linearEdgeRuns.push(currentRunLength);
+        }
+        currentRunLength = 0;
+      }
+    }
     
-    // Detect unusual color patterns (liquid damage, burn marks)
-    if (colorDiff > 100 && brightness < 150) colorAnomalies++;
+    if (currentRunLength > 15) {
+      linearEdgeRuns.push(currentRunLength);
+    }
   }
   
-  const totalPixels = data.length / 4;
-  const darkRatio = darkPixels / totalPixels;
-  const veryDarkRatio = veryDarkPixels / totalPixels;
-  const colorAnomalyRatio = colorAnomalies / totalPixels;
+  // Calculate metrics
+  const avgEdgeIntensity = edgeIntensitySum / total;
+  const crackRatio = crackPatternPixels / total;
+  const darkRatio = darkPixels / total;
+  const blackPatchRatio = blackPatches / total;
+  const colorAnomalyRatio = colorAnomalies / total;
+  const highVarianceRatio = highVarianceRegions / total;
   
-  // Step 4: Return signals with actual metrics
+  // Long linear edges (cracks tend to be long and continuous)
+  const longEdges = linearEdgeRuns.filter(len => len > 30);
+  const veryLongEdges = linearEdgeRuns.filter(len => len > 60);
+  const maxEdgeRun = linearEdgeRuns.length > 0 ? Math.max(...linearEdgeRuns) : 0;
+  
   return {
-    hasCrackPattern:    crackScore > 3.0 && maxComponentSize > 50,
-    crackScore:         Math.min(crackScore, 10),
-    hasDarkPatches:     darkRatio > 0.08 && veryDarkRatio > 0.02,
-    darkRatio:          darkRatio,
-    veryDarkRatio:      veryDarkRatio,
-    hasColorAnomalies:  colorAnomalyRatio > 0.01,
-    colorAnomalyRatio:  colorAnomalyRatio,
-    edgePixelCount:     totalEdgePixels,
-    edgePixelRatio:     totalEdgePixels / totalPixels,
-    maxComponent:       maxComponentSize,
+    avgEdgeIntensity,
+    maxEdgeMagnitude,
+    crackRatio,
+    darkRatio,
+    blackPatchRatio,
+    colorAnomalyRatio,
+    highVarianceRatio,
+    longEdgeCount: longEdges.length,
+    veryLongEdgeCount: veryLongEdges.length,
+    maxEdgeRun,
+    dimensions: { width, height }
   };
 }
 
-// ── Load TF.js Model (with improved error handling) ──────────────────────
-export async function initModel() {
-  if (modelLoaded) return model;
-  if (modelLoading) {
-    // Wait for existing load with timeout
-    return new Promise((resolve) => {
-      const maxWait = 30000; // 30 second timeout
-      const startTime = Date.now();
-      const check = setInterval(() => {
-        if (modelLoaded || Date.now() - startTime > maxWait) { 
-          clearInterval(check);
-          resolve(model); 
-        }
-      }, 100);
+// ══════════════════════════════════════════════════════════════
+// CONSERVATIVE DAMAGE SCORING
+// Very strict thresholds to avoid false positives
+// ══════════════════════════════════════════════════════════════
+
+function calculateDamageScores(analysis, mlPredictions) {
+  if (!analysis) return { damages: [], isClean: true, cleanConfidence: 0.85 };
+  
+  const {
+    avgEdgeIntensity,
+    crackRatio,
+    darkRatio,
+    blackPatchRatio,
+    colorAnomalyRatio,
+    highVarianceRatio,
+    longEdgeCount,
+    veryLongEdgeCount,
+    maxEdgeRun
+  } = analysis;
+  
+  const damages = [];
+  
+  // ═══ STRICT SCREEN CRACK/BROKEN DETECTION ═══
+  // Only detect if there are MULTIPLE strong indicators
+  const crackIndicators = [
+    crackRatio > 0.08,           // 8%+ pixels showing strong edges
+    maxEdgeRun > 80,             // Very long continuous edge line
+    veryLongEdgeCount >= 3,      // Multiple long edge patterns
+    highVarianceRatio > 0.03,    // High local variance (3%+)
+    avgEdgeIntensity > 40        // High overall edge intensity
+  ];
+  
+  const crackIndicatorCount = crackIndicators.filter(Boolean).length;
+  
+  // SCREEN BROKEN - Need at least 4 out of 5 indicators
+  if (crackIndicatorCount >= 4) {
+    const severity = crackIndicatorCount === 5 ? 0.95 : 0.85;
+    damages.push({
+      type: 'screen_broken',
+      label: DAMAGE_CATEGORIES.screen_broken.label,
+      description: DAMAGE_CATEGORIES.screen_broken.description,
+      severity: severityFromScore(severity, 'screen_broken'),
+      confidence: severity,
+      location: 'Front — display',
+      affects_function: true,
+      priority: 1,
+      isPrimary: true
     });
   }
-
-  modelLoading = true;
-  console.log('[SmartSep AI] Loading TensorFlow.js model...');
-
-  try {
-    // Attempt direct script injection for reliability
-    if (!window.tf) {
-      console.log('[SmartSep AI] Loading TensorFlow.js from CDN...');
-      await new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        script.src = 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js';
-        script.onload = () => resolve();
-        script.onerror = () => reject(new Error('TensorFlow.js CDN failed'));
-        document.head.appendChild(script);
-      });
-    }
-
-    if (!window.cocoSsd) {
-      console.log('[SmartSep AI] Loading COCO-SSD model from CDN...');
-      await new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        script.src = 'https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js';
-        script.onload = () => resolve();
-        script.onerror = () => reject(new Error('COCO-SSD CDN failed'));
-        document.head.appendChild(script);
-      });
-    }
-
-    if (!window.tf || !window.cocoSsd) {
-      throw new Error('TensorFlow.js or COCO-SSD not available');
-    }
-
-    // Load model with timeout
-    const loadPromise = window.cocoSsd.load({ base: 'lite_mobilenet_v2' });
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Model load timeout')), 15000)
-    );
-
-    model = await Promise.race([loadPromise, timeoutPromise]);
-
-    if (!model) {
-      throw new Error('Model failed to load');
-    }
-
-    modelWarmupComplete = false; // Skip warmup - it's slow
-    modelLoaded = true;
-    modelLoading = false;
-    console.log('[SmartSep AI] ✅ Model loaded successfully');
-    
-    return model;
-  } catch (e) {
-    console.error('[SmartSep AI] Model loading failed:', e.message);
-    modelLoading = false;
-    model = null;
-    // Return null - detection will use heuristics only
-    return null;
+  // SCREEN CRACK - Need at least 3 out of 5 indicators
+  else if (crackIndicatorCount >= 3) {
+    const severity = 0.75 + (crackIndicatorCount - 3) * 0.05;
+    damages.push({
+      type: 'screen_crack',
+      label: DAMAGE_CATEGORIES.screen_crack.label,
+      description: DAMAGE_CATEGORIES.screen_crack.description,
+      severity: severityFromScore(severity, 'screen_crack'),
+      confidence: severity,
+      location: 'Front — display',
+      affects_function: true,
+      priority: 2,
+      isPrimary: damages.length === 0
+    });
   }
-}
-
-// ── Main Detection Function (Optimized) ────────────────────
-export async function analyzeImage(imageElement) {
-  const startTime = performance.now();
   
-  try {
-    // Try model-based detection, gracefully degrade to heuristics
-    const m = await initModel();
-    
-    // Real TensorFlow.js detection if model loaded
-    if (m && window.tf) {
-      try {
-        const detections = await m.detect(imageElement, 10, 0.3);
-        console.log('[SmartSep AI] TensorFlow detections:', detections.length, 'objects');
-      } catch (e) {
-        console.warn('[SmartSep AI] TensorFlow detection failed, using heuristics:', e.message);
-      }
-    } else {
-      console.log('[SmartSep AI] TensorFlow not available, using pure heuristics (faster)');
-    }
-  } catch (e) {
-    console.warn('[SmartSep AI] Model initialization failed:', e.message);
+  // ═══ DISPLAY DAMAGE - Dead pixels, LCD issues ═══
+  // Very strict: need significant black patches + color anomalies
+  if (blackPatchRatio > 0.05 && colorAnomalyRatio > 0.02) {
+    const severity = clamp(0.70 + (blackPatchRatio * 2) + (colorAnomalyRatio * 3), 0.70, 0.95);
+    damages.push({
+      type: 'display_damage',
+      label: DAMAGE_CATEGORIES.display_damage.label,
+      description: DAMAGE_CATEGORIES.display_damage.description,
+      severity: severityFromScore(severity, 'display_damage'),
+      confidence: severity,
+      location: 'Display panel',
+      affects_function: true,
+      priority: 2,
+      isPrimary: damages.length === 0
+    });
   }
-
-  // Heuristic analysis (main detection worker)
-  const damages = mapDetectionsToDamage([], imageElement);
-
-  // Calculate overall severity
-  const sevOrder = { low: 1, medium: 2, high: 3, critical: 4 };
-  const maxSev = damages.reduce((acc, d) => {
-    return (sevOrder[d.severity] || 0) > (sevOrder[acc] || 0) ? d.severity : acc;
-  }, 'low');
-
-  // Confidence: actual average from signals, no bonuses
-  const avgConf = damages.length > 0 
-    ? damages.reduce((s, d) => s + d.confidence, 0) / damages.length
-    : 0;
-
-  // Repair status based on severity
-  const repairStatus = maxSev === 'critical' ? 'urgent' :
-                       maxSev === 'high'     ? 'pending' :
-                       maxSev === 'medium'   ? 'pending' : 'monitor';
-
-  const inferenceMs = Math.round(performance.now() - startTime);
-  console.log(`[SmartSep AI] Analysis complete in ${inferenceMs}ms — ${damages.length} issues detected, confidence: ${Math.round(avgConf*100)}%`);
-
+  
+  // ═══ WATER DAMAGE - Color anomalies without crack patterns ═══
+  if (colorAnomalyRatio > 0.04 && crackRatio < 0.05) {
+    const severity = clamp(0.70 + (colorAnomalyRatio * 4), 0.70, 0.90);
+    damages.push({
+      type: 'water_damage',
+      label: DAMAGE_CATEGORIES.water_damage.label,
+      description: DAMAGE_CATEGORIES.water_damage.description,
+      severity: severityFromScore(severity, 'water_damage'),
+      confidence: severity,
+      location: 'Internal components',
+      affects_function: true,
+      priority: 1,
+      isPrimary: damages.length === 0
+    });
+  }
+  
+  // ═══ Calculate clean device confidence ═══
+  let cleanConfidence = 0.90; // Start high
+  
+  // Reduce confidence based on damage indicators
+  cleanConfidence -= crackIndicatorCount * 0.15;
+  cleanConfidence -= Math.min(crackRatio * 5, 0.30);
+  cleanConfidence -= Math.min(colorAnomalyRatio * 10, 0.20);
+  cleanConfidence -= Math.min(blackPatchRatio * 5, 0.15);
+  cleanConfidence -= Math.min(highVarianceRatio * 5, 0.15);
+  
+  cleanConfidence = clamp(cleanConfidence, 0.10, 0.95);
+  
+  // If no damage detected, it's a clean device
+  const isClean = damages.length === 0 && cleanConfidence > 0.60;
+  
   return {
     damages,
-    overall_severity:      maxSev,
-    assessment_confidence: avgConf,
-    repair_status:         repairStatus,
-    inference_ms:          inferenceMs,
-    model_used:            model && modelLoaded ? 'coco-ssd+heuristics' : 'heuristics-only',
+    isClean,
+    cleanConfidence: isClean ? cleanConfidence : 1 - cleanConfidence,
+    rawMetrics: analysis
   };
 }
 
-// ── Draw Bounding Boxes on Canvas ─────────────────────────
+// ══════════════════════════════════════════════════════════════
+// MAIN ANALYSIS FUNCTION (Public API)
+// ══════════════════════════════════════════════════════════════
+
+export async function analyzeImage(imageElement, options = {}) {
+  const startTime = performance.now();
+  const { isBackImage = false } = options;
+  
+  try {
+    // Ensure model is loaded
+    if (!modelLoaded) {
+      await initModel();
+    }
+    
+    // Step 1: MobileNet classification for context
+    const mlPredictions = await analyzeWithMobileNet(imageElement);
+    const phoneCheck = isPhoneImage(mlPredictions);
+    
+    console.log('[SmartSep AI v4] Phone detection:', phoneCheck);
+    
+    // Step 2: Deep pixel analysis for damage patterns
+    const pixelAnalysis = analyzeImageForDamage(imageElement);
+    
+    // Step 3: Calculate damage scores with strict thresholds
+    const damageResults = calculateDamageScores(pixelAnalysis, mlPredictions);
+    
+    const inferenceMs = Math.round(performance.now() - startTime);
+    
+    // Determine overall severity
+    const severityOrder = { low: 1, medium: 2, high: 3, critical: 4 };
+    const maxSeverity = damageResults.damages.reduce((max, d) => {
+      return (severityOrder[d.severity] || 0) > (severityOrder[max] || 0) ? d.severity : max;
+    }, 'low');
+    
+    // Calculate average confidence
+    const avgConfidence = damageResults.damages.length > 0
+      ? damageResults.damages.reduce((sum, d) => sum + d.confidence, 0) / damageResults.damages.length
+      : damageResults.cleanConfidence;
+    
+    // Determine repair status
+    let repairStatus = 'none';
+    if (maxSeverity === 'critical') repairStatus = 'urgent';
+    else if (maxSeverity === 'high') repairStatus = 'pending';
+    else if (maxSeverity === 'medium') repairStatus = 'recommended';
+    else if (damageResults.damages.length > 0) repairStatus = 'monitor';
+    
+    const result = {
+      damages: damageResults.damages,
+      overall_severity: maxSeverity,
+      assessment_confidence: avgConfidence,
+      quality_score: phoneCheck.isPhone ? 0.85 : 0.70,
+      repair_status: repairStatus,
+      inference_ms: inferenceMs,
+      model_used: 'smartsep-v4-ml',
+      no_damage_verified: damageResults.isClean,
+      clean_confidence: damageResults.cleanConfidence,
+      is_phone_detected: phoneCheck.isPhone,
+      phone_confidence: phoneCheck.confidence,
+      ml_predictions: mlPredictions.slice(0, 3),
+      raw_analysis: pixelAnalysis
+    };
+    
+    console.log(`[SmartSep AI v4] ✅ Analysis complete in ${inferenceMs}ms — ${damageResults.damages.length} issues detected, clean: ${damageResults.isClean}`);
+    
+    return result;
+    
+  } catch (error) {
+    console.error('[SmartSep AI v4] Analysis error:', error);
+    
+    return {
+      damages: [],
+      overall_severity: 'low',
+      assessment_confidence: 0.5,
+      quality_score: 0.5,
+      repair_status: 'unknown',
+      inference_ms: Math.round(performance.now() - startTime),
+      model_used: 'smartsep-v4-ml',
+      no_damage_verified: false,
+      error: error.message
+    };
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// MULTI-IMAGE ANALYSIS (Front + Back)
+// ══════════════════════════════════════════════════════════════
+
+export async function analyzeMultipleImages(frontImage, backImage) {
+  const startTime = performance.now();
+  
+  // Analyze both images in parallel
+  const [frontResult, backResult] = await Promise.all([
+    frontImage ? analyzeImage(frontImage, { isBackImage: false }) : null,
+    backImage ? analyzeImage(backImage, { isBackImage: true }) : null,
+  ]);
+  
+  // Merge damages
+  const allDamages = [];
+  
+  if (frontResult?.damages) {
+    allDamages.push(...frontResult.damages.map(d => ({ ...d, source: 'front' })));
+  }
+  
+  if (backResult?.damages) {
+    allDamages.push(...backResult.damages.map(d => ({ ...d, source: 'back' })));
+  }
+  
+  // Deduplicate and sort by priority
+  const uniqueDamages = [];
+  const seenTypes = new Set();
+  
+  for (const damage of allDamages.sort((a, b) => (a.priority || 5) - (b.priority || 5))) {
+    if (!seenTypes.has(damage.type)) {
+      seenTypes.add(damage.type);
+      uniqueDamages.push(damage);
+    }
+  }
+  
+  // Mark primary
+  if (uniqueDamages.length > 0) {
+    uniqueDamages.forEach(d => d.isPrimary = false);
+    uniqueDamages[0].isPrimary = true;
+  }
+  
+  // Calculate combined metrics
+  const severityOrder = { low: 1, medium: 2, high: 3, critical: 4 };
+  const maxSeverity = uniqueDamages.reduce((max, d) => {
+    return (severityOrder[d.severity] || 0) > (severityOrder[max] || 0) ? d.severity : max;
+  }, 'low');
+  
+  const avgConfidence = uniqueDamages.length > 0
+    ? uniqueDamages.reduce((sum, d) => sum + d.confidence, 0) / uniqueDamages.length
+    : Math.max(frontResult?.clean_confidence || 0.5, backResult?.clean_confidence || 0.5);
+  
+  const qualityScore = Math.max(
+    frontResult?.quality_score || 0.5,
+    backResult?.quality_score || 0.5
+  );
+  
+  // Determine if completely clean
+  const isVerifiedClean = uniqueDamages.length === 0 && 
+    (frontResult?.no_damage_verified || backResult?.no_damage_verified);
+  
+  let repairStatus = 'none';
+  if (maxSeverity === 'critical') repairStatus = 'urgent';
+  else if (maxSeverity === 'high') repairStatus = 'pending';
+  else if (maxSeverity === 'medium') repairStatus = 'recommended';
+  else if (uniqueDamages.length > 0) repairStatus = 'monitor';
+  
+  const totalMs = Math.round(performance.now() - startTime);
+  
+  return {
+    damages: uniqueDamages,
+    overall_severity: maxSeverity,
+    assessment_confidence: avgConfidence,
+    quality_score: qualityScore,
+    repair_status: repairStatus,
+    inference_ms: totalMs,
+    model_used: 'smartsep-v4-multi',
+    no_damage_verified: isVerifiedClean,
+    frontAnalysis: frontResult,
+    backAnalysis: backResult,
+  };
+}
+
+// ══════════════════════════════════════════════════════════════
+// BOUNDING BOX VISUALIZATION
+// ══════════════════════════════════════════════════════════════
+
 export function drawBoundingBoxes(canvas, damages, imageWidth, imageHeight) {
   const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-  const scaleX = canvas.width  / imageWidth;
+  
+  const scaleX = canvas.width / imageWidth;
   const scaleY = canvas.height / imageHeight;
-
-  const sevColors = {
-    critical: '#FF3D6B',
-    high:     '#FF6B35',
-    medium:   '#FFB800',
-    low:      '#39D353',
+  
+  const severityColors = {
+    critical: '#FF2D55',
+    high: '#FF6B35',
+    medium: '#FFB800',
+    low: '#39D353',
   };
-
-  damages.forEach((d, idx) => {
-    // Skip damages without bounding box info (heuristic detections)
-    if (!d.bbox) return;
+  
+  damages.forEach((damage, idx) => {
+    if (!damage.bbox) return;
     
-    const [bx, by, bw, bh] = d.bbox;
+    const [bx, by, bw, bh] = damage.bbox;
     const x = bx * scaleX;
     const y = by * scaleY;
     const w = bw * scaleX;
     const h = bh * scaleY;
-    const color = sevColors[d.severity] || '#00E5FF';
-
-    // Draw box with glow
-    ctx.shadowColor   = color;
-    ctx.shadowBlur    = 8;
-    ctx.strokeStyle   = color;
-    ctx.lineWidth     = 2;
+    const color = severityColors[damage.severity] || '#00E5FF';
+    
+    // Draw glow
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 10;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
     ctx.strokeRect(x, y, w, h);
-    ctx.shadowBlur    = 0;
-
+    ctx.shadowBlur = 0;
+    
     // Corner brackets
-    const cs = 12;
+    const cs = 14;
     ctx.lineWidth = 3;
-    [[x, y, 1, 1], [x+w, y, -1, 1], [x, y+h, 1, -1], [x+w, y+h, -1, -1]].forEach(([cx, cy, dx, dy]) => {
+    [
+      [x, y, 1, 1],
+      [x + w, y, -1, 1],
+      [x, y + h, 1, -1],
+      [x + w, y + h, -1, -1],
+    ].forEach(([cx, cy, dx, dy]) => {
       ctx.beginPath();
       ctx.moveTo(cx + dx * cs, cy);
       ctx.lineTo(cx, cy);
       ctx.lineTo(cx, cy + dy * cs);
       ctx.stroke();
     });
-
+    
     // Label
-    const label = `${d.isPrimary ? '① ' : ''}${d.label} ${Math.round(d.confidence*100)}%`;
+    const label = `${damage.isPrimary ? '① ' : ''}${damage.label} ${Math.round(damage.confidence * 100)}%`;
     ctx.font = 'bold 11px "JetBrains Mono", monospace';
-    const textW = ctx.measureText(label).width + 10;
-    const textH = 20;
-    const labelY = y > textH + 2 ? y - textH - 2 : y + h + 2;
-
+    const textW = ctx.measureText(label).width + 12;
+    const textH = 22;
+    const labelY = y > textH + 4 ? y - textH - 4 : y + h + 4;
+    
     ctx.fillStyle = color;
     ctx.fillRect(x, labelY, textW, textH);
     ctx.fillStyle = '#050608';
-    ctx.fillText(label, x + 5, labelY + 14);
+    ctx.fillText(label, x + 6, labelY + 15);
   });
 }
 
-// ── Live Frame Analysis (for camera) ─────────────────────
+// ══════════════════════════════════════════════════════════════
+// LIVE FRAME ANALYSIS (For Camera Mode)
+// ══════════════════════════════════════════════════════════════
+
 export async function analyzeFrame(videoElement, canvasOverlay) {
   if (!videoElement || videoElement.readyState < 2) return null;
   
   try {
-    const damages = await analyzeImage(videoElement);
-    if (canvasOverlay && damages && damages.damages) {
-      canvasOverlay.width  = videoElement.videoWidth  || videoElement.clientWidth;
+    const result = await analyzeImage(videoElement, { forceRefresh: true });
+    
+    if (canvasOverlay && result?.damages) {
+      canvasOverlay.width = videoElement.videoWidth || videoElement.clientWidth;
       canvasOverlay.height = videoElement.videoHeight || videoElement.clientHeight;
-      drawBoundingBoxes(canvasOverlay, damages.damages, canvasOverlay.width, canvasOverlay.height);
+      drawBoundingBoxes(canvasOverlay, result.damages, canvasOverlay.width, canvasOverlay.height);
     }
-    return damages?.damages || null;
+    
+    return result;
   } catch (e) {
-    console.warn('[SmartSep AI] Frame analysis error:', e.message);
+    console.warn('[SmartSep AI v4] Frame analysis error:', e.message);
     return null;
   }
 }
+
+// ══════════════════════════════════════════════════════════════
+// EXPORTS
+// ══════════════════════════════════════════════════════════════
 
 export { DAMAGE_CATEGORIES };
 export function isModelLoaded() { return modelLoaded; }

@@ -127,9 +127,40 @@ export async function estimateCost(brand, damageType, severity, model = '') {
 export async function estimateTotalCost(brand, damages, model = '') {
   if (!damages || damages.length === 0) return null;
 
-  const estimates = await Promise.all(damages.map(d =>
-    estimateCost(brand, d.type, d.severity, model)
-  ));
+  const dbPricing = await getDevicePricing(brand, model);
+
+  const estimates = await Promise.all(damages.map(async (d) => {
+    let base = BASE_COSTS[d.type] || BASE_COSTS.scratches;
+    const brandInfo = BRAND_TIER[brand] || BRAND_TIER.Other;
+    const sevMult = SEVERITY_MULTIPLIER[d.severity] || 1.0;
+    const modelMult = MODEL_OVERRIDES[model] || 1.0;
+
+    if (dbPricing && dbPricing.base_costs?.[d.type]) {
+      const cost = dbPricing.base_costs[d.type];
+      base = { min: cost * 0.8, max: cost * 1.2, avg: cost };
+    }
+
+    const brandMultiplier = brandInfo.tier === 'premium' ? 1.0 : brandInfo.multiplier;
+    const rawMin = Math.round(base.min * brandMultiplier * sevMult * modelMult);
+    const rawMax = Math.round(base.max * brandMultiplier * sevMult * modelMult);
+    const min = Math.max(rawMin, getFloor(brandInfo.tier));
+    const max = Math.max(rawMax, min + 500);
+    const avg = Math.round((min + max) / 2);
+
+    return {
+      min,
+      max,
+      avg,
+      currency: 'INR',
+      confidence: dbPricing ? 0.95 : (brand && brand !== 'Other' ? (model ? 0.88 : 0.78) : 0.62),
+      suggestion: base.suggestion,
+      urgency: base.urgency,
+      repairOrReplace: getRepairOrReplaceRecommendation(brandInfo.tier, d.severity, d.type, max),
+      aiTip: getAITip(d.type, d.severity, brandInfo.tier),
+      brandTier: brandInfo.tier,
+      isDynamic: !!dbPricing,
+    };
+  }));
 
   // Multi-damage discount: 10% off per item for 2+ issues (labor overlap)
   // Apply discount per-item, not to total

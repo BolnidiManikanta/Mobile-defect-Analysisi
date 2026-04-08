@@ -6,8 +6,13 @@ import {
 import { db } from '../firebase/firestore.js';
 import { MOCK_SCANS } from './data.js';
 
+function isOffline() {
+  return typeof navigator !== 'undefined' && navigator.onLine === false;
+}
+
 // ── User Profile ────────────────────────────────────────────
 export async function saveUserProfile(user, extraData = {}) {
+  if (isOffline()) return null;
   try {
     const ref  = doc(db, 'users', user.uid);
     const snap = await getDoc(ref);
@@ -42,6 +47,7 @@ export async function saveUserProfile(user, extraData = {}) {
 }
 
 export async function getUserProfile(uid) {
+  if (isOffline()) return null;
   try {
     const snap = await getDoc(doc(db, 'users', uid));
     return snap.exists() ? { id: snap.id, ...snap.data() } : null;
@@ -320,6 +326,7 @@ export async function markNotificationsRead(uid) {
 
 // ── Devices & Pricing ───────────────────────────────────────
 export async function getDevicePricing(brand, model) {
+  if (isOffline()) return null;
   try {
     const q = query(
       collection(db, 'devices'), 
@@ -445,6 +452,7 @@ export async function rescheduleBooking(bookingId, date, time) {
  * Simple rate limiting check (client-side prevention)
  */
 export async function rateLimitCheck(uid, action, limit = 5, windowMs = 60000) {
+  if (isOffline()) return true;
   try {
     const logsRef = collection(db, 'logs');
     const q = query(

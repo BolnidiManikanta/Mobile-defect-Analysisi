@@ -82,9 +82,9 @@ export function renderLive(S) {
           <div class="field">
             <label class="lbl" style="display:flex;justify-content:space-between">
               <span>${t('sensitivity')}</span>
-              <span style="color:var(--cyan);font-family:'JetBrains Mono',monospace;font-size:10.5px" id="sens-label">High (85%)</span>
+              <span style="color:var(--cyan);font-family:'JetBrains Mono',monospace;font-size:10.5px" id="sens-label">Balanced (70%)</span>
             </label>
-            <input type="range" id="sensitivity" min="30" max="100" value="85"
+            <input type="range" id="sensitivity" min="30" max="100" value="70"
               style="width:100%;accent-color:var(--cyan);cursor:pointer"/>
           </div>
           <div class="field" style="margin-bottom:0">

@@ -76,18 +76,38 @@ export function renderSettings(S) {
     <!-- Notifications -->
     <div class="card" style="margin-bottom:12px">
       <div class="card-title">${t('notifications')}</div>
-      ${toggles.map(tog => `
-        <div class="toggle-wrap">
-          <div style="flex:1;min-width:0">
-            <div style="font-size:13px;font-weight:600">${tog.label}</div>
-            <div style="font-size:11.5px;color:var(--text-3);margin-top:2px">${tog.sub}</div>
-          </div>
-          <label class="toggle">
-            <input type="checkbox" id="${tog.id}" ${tog.def?'checked':''}/>
-            <div class="toggle-track"></div>
-            <div class="toggle-thumb"></div>
-          </label>
-        </div>`).join('')}
+      ${toggles.map((tog, idx) => {
+        if (tog.id === 't-push') {
+          const permStatus = typeof Notification !== 'undefined' ? Notification.permission : 'denied';
+          return `
+            <div class="toggle-wrap">
+              <div style="flex:1;min-width:0">
+                <div style="font-size:13px;font-weight:600">${tog.label}</div>
+                <div style="font-size:11.5px;color:var(--text-3);margin-top:2px">${tog.sub}</div>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px">
+                ${permStatus === 'granted' 
+                  ? `<span style="font-size:10px;color:var(--green);background:rgba(57,211,83,.15);padding:3px 8px;border-radius:4px;font-weight:600">ENABLED</span>`
+                  : permStatus === 'denied'
+                  ? `<span style="font-size:10px;color:var(--text-3);background:var(--ink-2);padding:3px 8px;border-radius:4px">DISABLED</span>`
+                  : `<button class="btn btn-ghost btn-sm" id="req-notif-btn" style="font-size:10px">Enable</button>`
+                }
+              </div>
+            </div>`;
+        }
+        return `
+          <div class="toggle-wrap">
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13px;font-weight:600">${tog.label}</div>
+              <div style="font-size:11.5px;color:var(--text-3);margin-top:2px">${tog.sub}</div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="${tog.id}" ${tog.def?'checked':''}/>
+              <div class="toggle-track"></div>
+              <div class="toggle-thumb"></div>
+            </label>
+          </div>`;
+      }).join('')}
     </div>
 
     <!-- Vendor Registration -->
